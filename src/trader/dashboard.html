@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-Trader Dashboard</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14181f;--mute:#667085;--line:#e4e7ec;--up:#0a7d4b;--down:#c0352b;--warn:#b26a00;--accent:#2f5bea;--live:#c0352b}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#171b23;--ink:#e8ebf0;--mute:#8b94a5;--line:#262c38;--up:#3ccf8e;--down:#ff7a70;--warn:#f0b04a;--accent:#7b9bff;--live:#ff7a70}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+h1{font-size:17px;margin:0}main{max-width:1180px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+h2{font-size:14px;margin:0 0 10px;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:6px 12px;border-radius:7px;cursor:pointer}
+button.stop{background:var(--down);border-color:var(--down);color:#fff;font-weight:600}
+table{width:100%;border-collapse:collapse}th,td{text-align:right;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}th{color:var(--mute);font-weight:500;font-size:12px}
+tr.row{cursor:pointer}tr.row:hover{background:rgba(127,127,127,.08)}tr.sel{background:rgba(47,91,234,.10)}
+.up{color:var(--up)}.down{color:var(--down)}.mute{color:var(--mute)}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
+.pill.live{color:var(--live);border-color:var(--live);font-weight:600}.pill.running{color:var(--up)}.pill.paused{color:var(--warn)}.pill.stopped{color:var(--down)}
+.scroll{overflow-x:auto}svg text{fill:var(--mute);font-size:11px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.kpi b{display:block;font-size:19px}
+.dec{border:1px solid var(--line);border-radius:8px;margin-bottom:8px}.dec>summary{padding:9px 12px;cursor:pointer;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.dec .body{padding:0 12px 12px;border-top:1px solid var(--line)}.dec h4{margin:12px 0 4px;font-size:12px;color:var(--mute);text-transform:uppercase}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:2px 14px}.kv span:nth-child(odd){color:var(--mute)}
+.banner{padding:8px 12px;border-radius:8px;margin-bottom:12px;border:1px solid var(--warn);color:var(--warn)}
+.legend span{margin-right:12px;font-size:12px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
+@media (max-width:640px){main{padding:10px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI-Trader <span class="mute" id="sub"></span></h1>
+  <div id="ctl"><span class="mute" id="upd"></span>
+    <button id="pauseAll">Pause all</button> <button class="stop" id="stopAll">STOP ALL</button></div>
+</header>
+<main>
+  <div id="banners"></div>
+  <div class="card"><h2>Strategy leaderboard</h2><div class="scroll"><table id="board"></table></div></div>
+  <div class="card"><h2>Return since start (%)</h2><div id="chart"></div><div class="legend" id="legend"></div></div>
+  <div id="detail"></div>
+  <div class="card"><h2>Recent state changes &amp; warnings</h2><div id="events" class="mute"></div></div>
+</main>
+<script>
+const SNAP = /*__SNAPSHOT__*/null;
+const COLORS=["#2f5bea","#e0762b","#1f9d72","#b04bd1","#c9a227"];
+let selected=null, detailCache={};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct=v=>v==null?"–":`<span class="${v>=0?"up":"down"}">${v>=0?"+":""}${v.toFixed(2)}%</span>`;
+const usd=v=>v==null?"–":(v<0?"-":"")+"$"+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0});
+const usd2=v=>v==null?"–":"$"+Number(v).toFixed(2);
+async function api(path){ if(SNAP){ return path.startsWith("/api/overview")?SNAP.overview:SNAP.books[new URLSearchParams(path.split("?")[1]).get("name")]; }
+  const r=await fetch(path); return r.json(); }
+async function control(action,book){
+  if(SNAP)return; if(action==="stop"&&!confirm(`STOP ${book==="all"?"ALL strategies (incl. live)":book}? New orders will be blocked.`))return;
+  await fetch("/api/control",{method:"POST",body:JSON.stringify({action,book})}); refresh(); }
+function chart(books){
+  const series=books.map((b,i)=>({name:b.book,color:COLORS[i%5],pts:b.curve.map(p=>[Date.parse(p.ts),p.ret_pct]),live:b.kind==="live"})).filter(s=>s.pts.length>1);
+  if(!series.length){$("chart").innerHTML='<div class="mute">No equity snapshots yet. They appear once strategies start reporting.</div>';$("legend").innerHTML="";return;}
+  const W=900,H=240,m={l:44,r:10,t:8,b:20}; const xs=series.flatMap(s=>s.pts.map(p=>p[0])),ys=series.flatMap(s=>s.pts.map(p=>p[1]).concat(0));
+  const x0=Math.min(...xs),x1=Math.max(...xs)||1,y0=Math.min(...ys),y1=Math.max(...ys);const ypad=(y1-y0||1)*.1;
+  const X=v=>m.l+(v-x0)/((x1-x0)||1)*(W-m.l-m.r),Y=v=>H-m.b-(v-(y0-ypad))/((y1-y0)+2*ypad)*(H-m.t-m.b);
+  let g="";for(let i=0;i<=4;i++){const v=y0-ypad+((y1-y0)+2*ypad)*i/4;g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="4" y="${Y(v)+4}">${v.toFixed(1)}%</text>`;}
+  g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--mute)" stroke-dasharray="4 3"/>`;
+  g+=series.map(s=>`<polyline fill="none" stroke="${s.color}" stroke-width="${s.live?3:1.8}" points="${s.pts.map(p=>X(p[0]).toFixed(1)+","+Y(p[1]).toFixed(1)).join(" ")}"/>`).join("");
+  $("chart").innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Return by strategy">${g}</svg>`;
+  $("legend").innerHTML=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.name)}${s.live?" (live)":""}</span>`).join("");
+}
+function board(books){
+  $("board").innerHTML=`<tr><th>Strategy</th><th>Mode</th><th>State</th><th>Equity</th><th>Return</th><th>Max DD</th><th>Win rate</th><th>Trades</th><th>Realized P&amp;L</th><th>Window ends</th><th></th></tr>`+
+  books.map((b,i)=>`<tr class="row ${b.book===selected?"sel":""}" data-b="${esc(b.book)}"><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${COLORS[i%5]};margin-right:6px"></i><b>${esc(b.book)}</b><div class="mute" style="font-size:12px;white-space:normal;max-width:320px">${esc(b.description)}</div></td>
+  <td><span class="pill ${b.kind==="live"?"live":""}">${b.kind==="live"?"LIVE":"paper"}</span></td><td><span class="pill ${b.state}">${b.state}</span></td>
+  <td>${usd(b.equity)}</td><td>${pct(b.return_pct)}</td><td>${b.max_drawdown_pct?b.max_drawdown_pct.toFixed(1)+"%":"–"}</td>
+  <td>${b.win_rate_pct==null?"–":b.win_rate_pct.toFixed(0)+"%"}</td><td>${b.trades}</td><td>${usd(b.realized_pnl)}</td><td class="mute">${esc(b.window[1]||"–")}</td>
+  <td>${SNAP?"":`<button data-pause="${esc(b.book)}">Pause</button> <button data-stop="${esc(b.book)}">Stop</button>`}</td></tr>`).join("");
+  document.querySelectorAll("tr.row").forEach(r=>r.onclick=e=>{if(e.target.tagName==="BUTTON")return;selected=r.dataset.b;refresh();});
+  document.querySelectorAll("[data-stop]").forEach(b=>b.onclick=()=>control("stop",b.dataset.stop));
+  document.querySelectorAll("[data-pause]").forEach(b=>b.onclick=()=>control("pause",b.dataset.pause));
+}
+function why(d){
+  const sig=Object.entries(d.signals||{});
+  const risk=d.approved?(d.risk_warnings.length?d.risk_warnings:["All risk checks passed"]):d.risk_reasons;
+  return `<div class="body"><h4>Why the agent proposed it</h4><div>${esc(d.rationale)||'<span class="mute">No rationale recorded.</span>'}</div>
+  ${sig.length?`<h4>Signals / rules that fired</h4><div class="kv">${sig.map(([k,v])=>`<span>${esc(k)}</span><span>${esc(typeof v==="object"?JSON.stringify(v):v)}</span>`).join("")}</div>`:""}
+  <h4>Risk guard verdict — ${d.approved?'<span class="up">approved</span>':'<span class="down">rejected</span>'}</h4>
+  <div>${risk.map(r=>"• "+esc(r)).join("<br>")}</div>
+  <h4>Order</h4><div class="kv"><span>Quote</span><span>${usd2(d.quote)}</span><span>Requested qty</span><span>${d.requested_qty}</span><span>Approved qty</span><span>${d.approved_qty}</span>
+  <span>Fills</span><span>${d.fills.length?d.fills.map(f=>`${f.qty} @ ${usd2(f.price)}`).join(", "):'<span class="mute">none recorded</span>'}</span></div></div>`;
+}
+function detail(d){
+  const s=d.summary,r=d.report;
+  $("detail").innerHTML=`<div class="card"><h2>${esc(s.book)} — ${s.kind==="live"?"LIVE":"paper"} detail</h2>
+  <div class="grid">
+   <div class="kpi"><span class="mute">Equity</span><b>${usd(s.equity)}</b></div><div class="kpi"><span class="mute">Return</span><b>${pct(s.return_pct)}</b></div>
+   <div class="kpi"><span class="mute">Max drawdown</span><b>${(r.max_drawdown_pct||0).toFixed(1)}%</b></div><div class="kpi"><span class="mute">Win rate</span><b>${r.win_rate_pct==null?"–":r.win_rate_pct.toFixed(0)+"%"}</b></div>
+   <div class="kpi"><span class="mute">Avg win / loss</span><b>${usd(r.avg_win)} / ${usd(r.avg_loss)}</b></div><div class="kpi"><span class="mute">Orders approved / rejected</span><b>${r.decisions_approved} / ${r.decisions_rejected}</b></div></div>
+   ${s.reason?`<p class="mute">State note: ${esc(s.reason)}</p>`:""}</div>
+  <div class="card"><h2>Open positions</h2>${d.positions.length?`<div class="scroll"><table><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>Unrealized</th></tr>${d.positions.map(p=>`<tr><td>${esc(p.symbol)}</td><td>${p.qty}</td><td>${usd2(p.avg_cost)}</td><td>${usd2(p.price)}</td><td>${pct((p.price/p.avg_cost-1)*100)} (${usd(p.pnl)})</td></tr>`).join("")}</table></div>`:'<span class="mute">None</span>'}</div>
+  <div class="card"><h2>P&amp;L by symbol</h2>${Object.keys(r.pnl_by_symbol).length?Object.entries(r.pnl_by_symbol).map(([k,v])=>`<span class="pill" style="margin-right:6px">${esc(k)} <span class="${v>=0?"up":"down"}">${usd(v)}</span></span>`).join(""):'<span class="mute">No closed trades yet</span>'}</div>
+  <div class="card"><h2>Decision log — click a trade to see why</h2>${d.decisions.length?d.decisions.map((x,i)=>`<details class="dec"${i===0?" open":""}><summary><span class="mute">${esc(x.ts.slice(0,16).replace("T"," "))}</span><b class="${x.side==="buy"?"up":"down"}">${x.side.toUpperCase()} ${x.approved_qty||x.requested_qty} ${esc(x.symbol)}</b><span>@ ${usd2(x.quote)}</span><span class="pill ${x.approved?"running":"stopped"}">${x.approved?"approved":"rejected"}</span><span class="mute">${esc((x.rationale||"").slice(0,90))}</span></summary>${why(x)}</details>`).join(""):'<span class="mute">No decisions yet</span>'}</div>`;
+}
+async function refresh(){
+  const o=await api("/api/overview"); const books=o.books; if(!selected&&books.length)selected=(books.find(b=>b.approved+b.rejected>0)||books[0]).book;
+  const live=books.find(b=>b.kind==="live"); $("sub").textContent=live?`· live: ${live.book}`:"";
+  $("upd").textContent=SNAP?"snapshot":"updated "+new Date().toLocaleTimeString()+"  "; if(SNAP){$("pauseAll").style.display=$("stopAll").style.display="none";}
+  const bn=[]; if(o.stop_file)bn.push("STOP file present — all new orders are blocked.");
+  books.filter(b=>b.state==="paused"&&b.reason).forEach(b=>bn.push(`${b.book} paused: ${b.reason}`));
+  $("banners").innerHTML=bn.map(t=>`<div class="banner">${esc(t)}</div>`).join("");
+  board(books); chart(books);
+  if(selected) detail(await api("/api/book?name="+encodeURIComponent(selected)));
+  $("events").innerHTML=o.events.length?o.events.map(e=>`${esc(e.ts.slice(0,16).replace("T"," "))} · <b>${esc(e.book)}</b> · ${esc(e.kind)} — ${esc(e.detail)}`).join("<br>"):"Nothing yet";
+}
+$("stopAll").onclick=()=>control("stop","all");$("pauseAll").onclick=()=>control("pause","all");
+refresh(); if(!SNAP)setInterval(refresh,15000);
+</script>
+</body>
+</html>

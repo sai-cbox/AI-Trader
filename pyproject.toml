@@ -1,0 +1,26 @@
+[project]
+name = "ai-trader"
+version = "0.1.0"
+description = "Rule-driven equity trading agent with paper mode, hard risk limits and kill switch"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+trader = "trader.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+trader = ["dashboard.html"]

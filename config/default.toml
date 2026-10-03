@@ -1,0 +1,25 @@
+# Locked to your Robinhood Agentic account. Live mode refuses to trade until set.
+allowed_account_id = ""
+
+start_cash = 100000.0          # starting cash of EACH paper book
+daily_loss_limit_pct = 3.0     # stop NEW buys for the day
+drawdown_stop_pct = 12.0       # from peak equity: auto-pause + report
+drawdown_warn_pct = 6.0        # warning only
+max_position_pct = 10.0        # per stock, % of equity
+max_invested_pct = 85.0        # total invested, % of equity
+max_orders_per_day = 20
+price_sanity_pct = 5.0         # limit price must be within this % of quote
+duplicate_window_sec = 300
+slippage_bps = 5.0             # paper fills
+window_trading_days = 30       # evaluation window
+symbol_denylist = []
+db_path = "data/trader.db"
+
+# Exactly one strategy may be "live" (real money, whole Agentic account).
+# All others are "paper" (simulated, own account each).
+[strategies]
+momentum-quality = "live"
+mean-reversion = "paper"
+breakout = "paper"
+trend-following = "paper"
+earnings-drift = "paper"
