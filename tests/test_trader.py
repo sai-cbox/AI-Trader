@@ -604,3 +604,74 @@ def test_distribution_dates_and_config_ai_list():
         b["t"] = f"2026-10-0{i + 1}"
     assert distribution_dates(bars) == ["2026-10-03", "2026-10-04"]
     assert "ANET" in Config().ai_symbols
+
+
+# ---------------- build_context end to end against a synthetic Robinhood ----------------
+class FakeRH:
+    """Answers every read tool the data step uses with replies shaped like the real ones. ext: ATRs above the 21 EMA."""
+    def __init__(self, ext_by_symbol):
+        self.ext, self.calls = ext_by_symbol, []
+
+    async def call(self, tool, args=None):
+        args = args or {}
+        self.calls.append(tool)
+        if tool == "get_accounts":
+            return {"data": {"accounts": [{"account_number": "ACC1", "agentic_allowed": True}]}}
+        if tool == "get_portfolio":
+            return {"data": {"total_value": "2000", "cash": "1500", "buying_power": {"unleveraged_buying_power": "1500"}}}
+        if tool == "get_equity_positions":
+            return {"data": {"positions": [{"symbol": "HELD", "quantity": "2", "average_buy_price": "100"}]}}
+        if tool == "get_equity_quotes":
+            return {"data": {"results": [{"quote": {"symbol": s, "last_trade_price": "100", "bid_price": "99.9", "ask_price": "100.1",
+                                                    "previous_close": "99"}} for s in args["symbols"]]}}
+        if tool == "run_scan":
+            return {"data": {"result": {"results": [{"ticker": t, "columns": {"x": 1}} for t in ("AAA", "BBB", "CCC", "DDD")]}}}
+        if tool == "get_equity_fundamentals":
+            return {"data": {"results": [{"symbol": s, "market_cap": "5e9", "high_52_weeks": "105", "low_52_weeks": "50",
+                                          "average_volume_30_days": "1000", "volume": "1500", "sector": "Tech" if s in ("AAA", "BBB") else "Health",
+                                          "industry": "x", "pe_ratio": "20"} for s in args["symbols"]]}}
+        if tool == "get_earnings_calendar":
+            return {"data": {"results": [{"symbol": "DDD", "report": {"date": (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d")}}]}}
+        if tool == "get_equity_historicals":
+            mult = {"SPY": 1.0005, "QQQ": 1.0005, "AAA": 1.004, "BBB": 1.002, "CCC": 1.003, "HELD": 1.001}
+            res = []
+            for s in args["symbols"]:
+                c, bars = 100.0, []
+                for i in range(60):
+                    c *= mult.get(s, 1.001)
+                    bars.append({"begins_at": f"2026-08-{(i % 28) + 1:02d}T00:00:00Z" if False else f"2026-{7 + i // 28:02d}-{(i % 28) + 1:02d}T00:00:00Z",
+                                 "close_price": str(c), "high_price": str(c + 1), "low_price": str(c - 1), "volume": "1000"})
+                res.append({"symbol": s, "bars": bars})
+            return {"data": {"results": res}}
+        if tool == "get_equity_technical_indicators":
+            sym, typ, out = args["symbol"], args["type"], args["output"]
+            ext = self.ext.get(sym, 0.3)
+            val = {("ema", 21): 100.0 - ext * 2.0, ("atr", 14): 2.0, ("sma", 50): 95.0, ("sma", 150): 85.0, ("sma", 200): 75.0,
+                   ("ema", 50): 96.0, ("ema", 100): 90.0, ("rsi", None): 60.0}.get((typ, args.get("period")), 1.0)
+            if typ == "macd":
+                series = [{"time": f"t{i}", "macd": 1, "signal": 0.5, "histogram": 0.1 * (i + 1)} for i in range(3)]
+            elif out.startswith("last"):
+                series = [{"time": f"2026-09-0{i + 1}T00:00:00Z", "value": val - (3 - i)} for i in range(3)]
+            else:
+                series = [{"time": "2026-10-02T00:00:00Z", "value": val}]
+            if sym in ("SPY", "QQQ") and (typ, args.get("period")) == ("sma", 50):
+                series = [{"time": "2026-10-02T00:00:00Z", "value": 99.0}]
+            return {"data": {"indicators": [{"type": typ, "series": series}]}}
+        raise AssertionError(f"unexpected tool {tool}")
+
+
+def test_build_context_filters_by_strength_sector_extension_and_earnings():
+    import asyncio
+    from trader.robinhood.market import build_context
+    cfg = Config(allowed_account_id="ACC1", max_candidates=5, max_per_sector_candidates=1)
+    rh = FakeRH({"AAA": 3.0, "BBB": 0.3, "CCC": 0.4})            # AAA is extended; BBB, CCC are clean
+    now = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+    ctx = asyncio.run(build_context(rh, cfg, "momentum-quality", lambda *_: None, now))
+    syms = [c["symbol"] for c in ctx["candidates"]]
+    assert "DDD" not in syms                                       # earnings in 3 days
+    assert "AAA" not in syms and ctx["extended_skipped"][0]["symbol"] == "AAA"
+    assert set(syms) == {"BBB", "CCC"}      # extended AAA does not crowd BBB out of the Tech slot (cap is 1 per sector)
+    assert ctx["regime"]["state"] in ("RISK-ON", "RISK-OFF") and ctx["account_number"] == "ACC1"
+    assert ctx["holdings"] and ctx["holdings"][0]["symbol"] == "HELD"
+    assert ctx["funnel"]["scan_matches"] == 4 and "run_scan" in rh.calls
+    assert not any(t.startswith(("place_", "cancel_")) for t in rh.calls)

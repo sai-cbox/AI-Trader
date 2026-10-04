@@ -32,7 +32,8 @@ def print_context(ctx: dict, log=print) -> None:
     log(f"\nREGIME: {r['state']}  - " + "; ".join(r["reasons"]))
     f = ctx["funnel"]
     log(f"FUNNEL: scan {f['scan_matches']} -> affordable {f['affordable']} -> after earnings filter "
-        f"{f['after_earnings_filter']} -> finalists {f['finalists']}")
+        f"{f['after_earnings_filter']} -> strongest/sector-capped {f.get('strength_ranked')} -> not extended "
+        f"{f.get('extension_ok')} -> finalists {f['finalists']}")
     for sym in ("SPY", "QQQ"):
         x = r["facts"][sym]
         log(f"  {sym}: price {x['price']:.2f} | 50d {x['sma50']:.2f} | 200d {x['sma200']:.2f} | EMA50 {x['ema50']:.2f} vs EMA100 "
@@ -45,7 +46,9 @@ def print_context(ctx: dict, log=print) -> None:
             f"{c['extension_atr']:>6} {c['extension_label'][:10]:>3} {c['macd']:16} {str(c.get('rs_vs_spy_30d')):>6} "
             f"{c['shares_at_position_size']:>6}")
     if not ctx["candidates"]:
-        log("  (none)")
+        log("  (none: nothing strong enough that is also not extended)")
+    if ctx.get("extended_skipped"):
+        log("  strong but extended, skipped: " + ", ".join(f"{x['symbol']} ({x['extension_atr']} ATR)" for x in ctx["extended_skipped"][:6]))
     if ctx["holdings"]:
         log("\nHOLDINGS")
         for h in ctx["holdings"]:

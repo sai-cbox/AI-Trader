@@ -33,6 +33,7 @@ class Config:
                                    "PLTR", "APP", "CRM", "DDOG", "MDB", "IREN", "CORZ", "HUT", "NNE", "CCJ", "BWXT", "CEG", "VST")
     scan_id: str = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # saved Robinhood scan used by the momentum-quality skill
     max_candidates: int = 20
+    max_per_sector_candidates: int = 4
     analyst_model: str = "claude-opus-5-5"
     analyst_effort: str = "high"
     analyst_max_proposals: int = 3

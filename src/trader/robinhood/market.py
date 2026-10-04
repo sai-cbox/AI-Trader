@@ -12,6 +12,7 @@ from ..config import Config
 from ..strategy import momentum as m
 from .client import agentic_accounts
 
+ACTIONABLE = ("BELOW_21EMA", "CLEAN", "ACCEPTABLE")
 TIME_NAMES = {"time", "timestamp", "date", "begins_at", "ts", "t", "start", "end"}
 
 
@@ -238,33 +239,61 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
     days_to = lambda s: (datetime.strptime(earn[s], "%Y-%m-%d").date() - today).days if s in earn else None
     keep = [s for s in afford if s in fund and (days_to(s) is None or days_to(s) > 10)]
     funnel["after_earnings_filter"] = len(keep)
-    sector_hits: dict[str, int] = {}
-    for s in keep:
-        sector_hits[fund[s].get("sector")] = sector_hits.get(fund[s].get("sector"), 0) + 1
-    near_high = lambda s: (ask(s) / fund[s]["high52"]) if fund[s].get("high52") else 0
-    ranked = sorted(keep, key=lambda s: (-sector_hits[fund[s].get("sector")], -near_high(s)))[:cfg.max_candidates]
-    funnel["finalists"] = len(ranked)
-    log(f"[data] funnel: scan {funnel['scan_matches']} -> affordable {funnel['affordable']} -> "
-        f"after earnings {funnel['after_earnings_filter']} -> finalists {funnel['finalists']}")
-
+    # Stage A: strength ranking from price history (cheap), sector-capped, then an extension filter (2 calls per name),
+    # so the analyst only sees setups the skill could actually buy.
     spy_ret = spy.get("ret_30d")
-    cands, errors = [], []
-    results = await asyncio.gather(*[symbol_facts(f, s, ask(s), fund[s], spy_ret) for s in ranked], return_exceptions=True)
-    bars = {}
-    for i in range(0, len(ranked), 10):
+    bars: dict[str, list[dict]] = {}
+    for i in range(0, len(keep), 10):
         try:
-            bars.update(await f.bars(ranked[i:i + 10]))
+            bars.update(await f.bars(keep[i:i + 10]))
         except Exception as e:
             log(f"[data] WARNING history unavailable for a batch ({type(e).__name__})")
+    ret30 = {s: m.pct_return(bars[s], 21) for s in keep if s in bars}
+    rs_of = lambda s: (ret30[s] - spy_ret) if ret30.get(s) is not None and spy_ret is not None else -999.0
+    stage_a, per_sector = [], {}
+    for s in sorted([s for s in keep if s in ret30], key=lambda s: -rs_of(s)):
+        sec = fund[s].get("sector")
+        if per_sector.get(sec, 0) >= cfg.max_per_sector_candidates * 3:   # loose cap here; the strict cap comes after the extension filter
+            continue
+        per_sector[sec] = per_sector.get(sec, 0) + 1
+        stage_a.append(s)
+        if len(stage_a) >= 2 * cfg.max_candidates:
+            break
+
+    async def quick_ext(s: str):
+        e21, a14 = await asyncio.gather(f.ind(s, "ema", 21), f.ind(s, "atr", 14))
+        return m.extension(ask(s), latest_value(e21), latest_value(a14))
+
+    quick = await asyncio.gather(*[quick_ext(s) for s in stage_a], return_exceptions=True)
+    errors: list[str] = []
+    actionable, extended = [], []
+    for s, r in zip(stage_a, quick):
+        if isinstance(r, BaseException):
+            errors.append(f"{s}: {type(r).__name__}: {str(r)[:160]}")
+        elif r[1] in ACTIONABLE:
+            actionable.append(s)
+        else:
+            extended.append({"symbol": s, "extension_atr": r[0], "label": r[1], "rs_vs_spy_30d": round(rs_of(s), 1)})
+    ranked, final_sector = [], {}
+    for s in actionable:                                     # strict per-sector cap, applied to actionable names only
+        sec = fund[s].get("sector")
+        if final_sector.get(sec, 0) < cfg.max_per_sector_candidates and len(ranked) < cfg.max_candidates:
+            final_sector[sec] = final_sector.get(sec, 0) + 1
+            ranked.append(s)
+    funnel.update({"strength_ranked": len(stage_a), "extension_ok": len(actionable), "finalists": len(ranked)})
+    log(f"[data] funnel: scan {funnel['scan_matches']} -> affordable {funnel['affordable']} -> after earnings "
+        f"{funnel['after_earnings_filter']} -> strongest/sector-capped {len(stage_a)} -> not extended {len(actionable)} "
+        f"-> finalists {len(ranked)}")
+
+    cands = []
+    results = await asyncio.gather(*[symbol_facts(f, s, ask(s), fund[s], spy_ret) for s in ranked], return_exceptions=True)
     for s, r in zip(ranked, results):
         if isinstance(r, BaseException):
             errors.append(f"{s}: {type(r).__name__}: {str(r)[:160]}")
             continue
-        b = bars.get(s, [])
-        ret30 = m.pct_return(b, 21)
-        r.update({"ret_30d": ret30, "rs_vs_spy_30d": round(ret30 - spy_ret, 2) if ret30 is not None and spy_ret is not None else None,
-                  "shares_at_position_size": m.shares_for(position_size, ask(s)), "ask": ask(s),
-                  "earnings_in_days": days_to(s), "scan_columns": next((x["columns"] for x in scan if x["symbol"] == s), {})})
+        r.update({"ret_30d": ret30.get(s), "rs_vs_spy_30d": round(rs_of(s), 2), "shares_at_position_size": m.shares_for(position_size, ask(s)),
+                  "ask": ask(s), "earnings_in_days": days_to(s),
+                  "scan_columns": next((x["columns"] for x in scan if x["symbol"] == s), {})})
         cands.append(r)
     for e in errors[:5]:
         log(f"[data] candidate skipped: {e}")
@@ -285,4 +314,4 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
             "account": {"equity": equity, "cash": pf["cash"], "buying_power": pf["buying_power"], "position_size": position_size,
                         "positions": positions},
             "regime": {"state": reg.state, "reasons": reg.reasons, "qqq_distribution": reg.qqq_distribution, "facts": reg.facts},
-            "funnel": funnel, "candidates": cands, "holdings": holdings, "candidate_errors": errors}
+            "funnel": funnel, "candidates": cands, "extended_skipped": extended[:8], "holdings": holdings, "candidate_errors": errors}

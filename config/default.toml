@@ -16,6 +16,7 @@ symbol_denylist = []
 db_path = "data/trader.db"
 scan_id = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # your saved Robinhood scan (Russell 3000 quality momentum)
 max_candidates = 20
+max_per_sector_candidates = 4                      # diversity: at most this many finalists per sector
 analyst_model = "claude-opus-5-5"
 analyst_effort = "high"
 analyst_max_proposals = 3
