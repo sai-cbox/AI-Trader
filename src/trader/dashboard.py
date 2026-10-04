@@ -87,6 +87,19 @@ def book_detail(j: Journal, cfg: Config, book: str, limit: int = 100) -> dict:
             "closed": realized_trades(fills)[-50:][::-1]}
 
 
+def book_doc(j: Journal, cfg: Config, book: str, now: str) -> dict:
+    """One document per strategy for the hosted dashboard's `books` collection."""
+    d = book_detail(j, cfg, book, limit=25)
+    s, r = d["summary"], d["report"]
+    return {"book": book, "kind": s["kind"], "description": s["description"], "state": s["state"],
+            "reason": s["reason"], "equity": s["equity"], "return_pct": s["return_pct"],
+            "max_drawdown_pct": s["max_drawdown_pct"], "win_rate_pct": s["win_rate_pct"],
+            "realized_pnl": s["realized_pnl"], "trades": s["trades"], "approved": s["approved"],
+            "rejected": s["rejected"], "window_end": (s["window"] or [None, None])[1],
+            "curve": s["curve"][-120:], "positions": d["positions"], "decisions": d["decisions"],
+            "avg_win": r["avg_win"], "avg_loss": r["avg_loss"], "updated_at": now}
+
+
 def snapshot(j: Journal, cfg: Config) -> dict:
     return {"overview": overview(j, cfg), "books": {b: book_detail(j, cfg, b) for b in cfg.books}}
 

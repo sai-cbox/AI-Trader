@@ -65,6 +65,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("prices", nargs="+")
     s = sub.add_parser("report"); book_arg(s, default="all")
     s.add_argument("--bench-start", type=float); s.add_argument("--bench-end", type=float)
+    s = sub.add_parser("export-state", help="write a strategy's state to JSON (persist between cloud runs)")
+    book_arg(s, required=True); s.add_argument("--out", required=True)
+    s = sub.add_parser("import-state", help="restore a strategy's state from JSON (missing/empty file = fresh start)")
+    book_arg(s, required=True); s.add_argument("--file", required=True)
+    s = sub.add_parser("sync-docs", help="write dashboard documents (books/<name>.json) for strategies that have data")
+    s.add_argument("--dir", required=True)
+    s = sub.add_parser("apply-control", help="apply the dashboard's stop/pause switches to the engine")
+    s.add_argument("--stop", type=int, default=0); s.add_argument("--pause", type=int, default=0)
     s = sub.add_parser("dashboard", help="serve the monitoring dashboard or export a static snapshot")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--export", metavar="FILE.html")
 
@@ -130,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("decision not found / rejected / other strategy", file=sys.stderr); return 3
             if row["needs_approval"] and not row["user_approved_at"]:
                 print("confirm period: this order was never approved by the user", file=sys.stderr); return 3
+        if cfg.kind(a.book) == "live" and not j.get(f"{a.book}:first_fill_date"):
+            j.set(f"{a.book}:first_fill_date", now.astimezone(ET).date().isoformat())
         j.fill(a.book, a.symbol.upper(), a.side, a.qty, a.price, a.ref, a.rationale, a.decision_id, now)
         j.db.commit()
         out({"recorded": True})
@@ -151,6 +161,36 @@ def main(argv: list[str] | None = None) -> int:
         out({"equity": acct.equity, "cash": acct.cash, "positions": [p.__dict__ for p in acct.positions]})
     elif a.cmd == "report":
         out({b: build_report(j, b, a.bench_start, a.bench_end) for b in books_for(cfg, a.book)})
+    elif a.cmd == "export-state":
+        from .state import export_state
+        Path(a.out).write_text(json.dumps(export_state(j, a.book)))
+        out({"exported": a.book, "file": a.out})
+    elif a.cmd == "import-state":
+        from .state import import_state
+        books_for(cfg, a.book)
+        f = Path(a.file)
+        data = json.loads(f.read_text()) if f.exists() and f.read_text().strip() else {}
+        out(import_state(j, a.book, data))
+    elif a.cmd == "sync-docs":
+        from . import dashboard
+        d = Path(a.dir) / "books"; d.mkdir(parents=True, exist_ok=True); written = []
+        for b in cfg.books:
+            if j.get(f"{b}:state") is None and not j.snapshots(b):
+                continue
+            (d / f"{b}.json").write_text(json.dumps(dashboard.book_doc(j, cfg, b, now.isoformat()), default=str))
+            written.append(b)
+        out({"written": written, "dir": str(d)})
+    elif a.cmd == "apply-control":
+        changed = {}
+        for b in cfg.books:
+            st, reason = controls.get_state(j, b), j.get(f"{b}:state_reason") or ""
+            if a.stop and st != controls.STOPPED and j.get(f"{b}:state") is not None:
+                controls.set_state(j, b, controls.STOPPED, "dashboard stop"); changed[b] = "stopped"
+            elif not a.stop and a.pause and st == controls.RUNNING:
+                controls.set_state(j, b, controls.PAUSED, "dashboard pause"); changed[b] = "paused"
+            elif not a.stop and not a.pause and st != controls.RUNNING and reason.startswith("dashboard"):
+                controls.set_state(j, b, controls.RUNNING, "dashboard cleared"); changed[b] = "running"
+        out({"changed": changed})
     elif a.cmd == "dashboard":
         from . import dashboard
         if a.export:

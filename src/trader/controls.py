@@ -50,8 +50,9 @@ def kill_file_present(db_path: str) -> bool:
 
 
 def confirm_active(j: Journal, book: str, confirm_days: int, today: date) -> bool:
-    """True while a book is inside its 'ask the user before every order' period (calendar days from start)."""
+    """True while orders need the user's approval: from the start until `confirm_days` calendar days after the
+    book's first fill (the clock starts with the first real trade, not with `start`)."""
     if not confirm_days:
         return False
-    start_s = j.get(f"{book}:window_start")
-    return bool(start_s) and today < date.fromisoformat(start_s) + timedelta(days=confirm_days)
+    first = j.get(f"{book}:first_fill_date")
+    return not first or today < date.fromisoformat(first) + timedelta(days=confirm_days)

@@ -321,7 +321,10 @@ def test_live_earnings_halves_position_cap(live):
 def test_confirm_period_flags_orders_then_auto(live):
     cfg, j, g = live
     d = g.check(LB, lbuy(), lacct(), 100, NOW + timedelta(hours=1))
-    assert d.approved and d.needs_user_approval
+    assert d.approved and d.needs_user_approval          # no fill yet: clock hasn't started
+    j.set(f"{LB}:first_fill_date", NOW.date().isoformat())
+    d1 = g.check(LB, lbuy("MSFT", sector="Y"), lacct(), 100, NOW + timedelta(hours=2))
+    assert d1.needs_user_approval                        # day 1 after first fill
     d2 = g.check(LB, lbuy("AMD", sector="X"), lacct(), 100, LATER)
     assert d2.approved and not d2.needs_user_approval
 
@@ -341,3 +344,47 @@ def test_record_gate_requires_user_approval(live, tmp_path):
     assert main(["--config", str(conf), "approve", "--decision-id", str(d.id)]) == 0
     assert main(base + ["--decision-id", str(d.id)]) == 0
     assert len(j.fills(LB)) == 1
+
+
+def test_state_roundtrip_and_id_remap(env, tmp_path):
+    from trader.state import export_state, import_state
+    cfg, j, g = env
+    started(j, PB); started(j, "breakout")
+    b1, b2 = PaperBroker(cfg, j, PB), PaperBroker(cfg, j, "breakout")
+    for b, book, sym in ((b1, PB, "AAPL"), (b2, "breakout", "NVDA")):
+        d = g.check(book, buy(sym, 10, rationale="r", signals={"x": 1}), b.account(), 100, NOW)
+        b.fill(sym, "buy", d.qty, 100, decision_id=d.id)
+    snap = export_state(j, PB)
+    assert snap["fills"] and snap["decisions"] and snap["meta"][f"{PB}:state"] == "running"
+    # fresh container that already holds ANOTHER book: ids must not collide
+    j2 = Journal(str(tmp_path / "fresh.db"))
+    import_state(j2, "breakout", export_state(j, "breakout"))
+    import_state(j2, PB, snap)
+    assert len(j2.fills(PB)) == 1 and len(j2.fills("breakout")) == 1
+    ids = [r["id"] for r in j2.db.execute("SELECT id FROM decisions")]
+    assert len(ids) == len(set(ids)) == 2
+    fid = j2.fills(PB)[0]["decision_id"]
+    assert j2.get_decision(fid)["book"] == PB
+    assert import_state(j2, PB, {}) == {"imported": False}
+    assert PaperBroker(cfg, j2, PB).account().positions[0].symbol == "AAPL"
+
+
+def test_apply_control_and_sync_docs(env, tmp_path):
+    import json
+    from trader.cli import main
+    cfg, j, g = env
+    conf = tmp_path / "c.toml"; conf.write_text(f'db_path = "{cfg.db_path}"\n')
+    started(j, PB)
+    assert main(["--config", str(conf), "apply-control", "--pause", "1"]) == 0
+    assert controls.get_state(j, PB) == controls.PAUSED
+    assert main(["--config", str(conf), "apply-control", "--stop", "1"]) == 0
+    assert controls.get_state(j, PB) == controls.STOPPED
+    assert main(["--config", str(conf), "apply-control"]) == 0          # cleared
+    assert controls.get_state(j, PB) == controls.RUNNING
+    controls.set_state(j, PB, controls.PAUSED, "drawdown 12%")          # guard pauses are NOT auto-resumed
+    main(["--config", str(conf), "apply-control"])
+    assert controls.get_state(j, PB) == controls.PAUSED
+    assert main(["--config", str(conf), "sync-docs", "--dir", str(tmp_path / "o")]) == 0
+    doc = json.loads((tmp_path / "o/books" / f"{PB}.json").read_text())
+    assert doc["book"] == PB and doc["kind"] == "paper" and "decisions" in doc
+    assert not (tmp_path / "o/books/breakout.json").exists()            # never started

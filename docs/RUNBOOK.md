@@ -34,3 +34,9 @@ Robinhood is reached through MCP tools in the agent session. The engine (`trader
 2. `trader start --paper` (all four paper strategies), run a few paper days as a smoke test.
 3. `trader start --book momentum-quality` only when you decide to go live.
 4. `trader dashboard --export report.html` for a shareable snapshot.
+
+
+## Cloud operation (scheduled routines)
+Routine prompts live in `routines/` (common boot + paper-strategies, live-proposer, live-executor). State is kept per
+strategy in the dashboard database (`state/<book>`) because every cloud run starts in a fresh container; the dashboard
+page also reads `books/<book>`, `live_orders` and `control/engine`. See `routines/common.md`.
