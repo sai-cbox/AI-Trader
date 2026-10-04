@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import json
+
 import pytest
 
 from trader import controls
@@ -720,3 +722,131 @@ def test_pipeline_forces_a_mandatory_exit_the_analyst_missed(tmp_path):
     assert out == 0 and "FORCED EXIT by code (dry run): SELL 2 HELD limit 91.85" in text and "1 order(s) would be placed" in text
     row = j.db.execute("SELECT approved, side, qty FROM decisions WHERE book=?", (LB,)).fetchone()
     assert (row["approved"], row["side"], row["qty"]) == (1, "sell", 2)
+
+
+# ---------------- indicators ----------------
+def test_indicator_math():
+    from trader.strategy import indicators as ind
+    up = [float(i) for i in range(1, 40)]
+    assert ind.rsi(up, 14) == 100.0 and ind.rsi(up[::-1], 14) == pytest.approx(0.0, abs=1e-9)
+    assert ind.sma([1, 2, 3, 4, 5], 3) == 4 and ind.sma([1, 2], 3) is None
+    flat = [{"high": 11.0, "low": 9.0, "close": 10.0} for _ in range(30)]
+    assert ind.atr(flat, 14) == pytest.approx(2.0)
+    lo, mid, hi = ind.bollinger([10.0] * 20)
+    assert lo == mid == hi == 10.0
+    lo, mid, hi = ind.bollinger([9.0, 11.0] * 10)
+    assert mid == 10.0 and lo == pytest.approx(8.0) and hi == pytest.approx(12.0)
+    trend = [{"high": 10 + i + 0.5, "low": 10 + i - 0.5, "close": 10.0 + i} for i in range(60)]
+    chop = [{"high": 10.6 + (i % 2) * 0.1, "low": 9.4 - (i % 2) * 0.1, "close": 10.0 + (0.4 if i % 2 else -0.4)} for i in range(60)]
+    assert ind.adx(trend, 14) > 40 and ind.adx(chop, 14) < 20
+    assert ind.consecutive_down([5, 4, 3, 4, 3, 2, 1]) == 3
+
+
+# ---------------- paper strategies ----------------
+from datetime import date as _date
+
+
+def mkbars(closes, vols=None, highs=None, lows=None, opens=None, start=_date(2025, 1, 1)):
+    out = []
+    for i, c in enumerate(closes):
+        out.append({"t": (start + timedelta(days=i)).isoformat(), "close": float(c),
+                    "high": float(highs[i]) if highs else c + 0.5, "low": float(lows[i]) if lows else c - 0.5,
+                    "open": float(opens[i]) if opens else float(c), "volume": float(vols[i]) if vols else 1000.0})
+    return out
+
+
+def _ctx_p(bars, positions=None, universe=None, **kw):
+    from trader.strategy.paper_rules import Ctx
+    return Ctx(bars=bars, positions=positions or {}, equity=100_000.0, universe=universe if universe is not None else list(bars), **kw)
+
+
+def test_mean_reversion_buys_oversold_pullback_in_uptrend_and_exits_on_revert():
+    from trader.strategy.paper_rules import mean_reversion
+    rise = [100 + i * 0.5 for i in range(246)]
+    dip = rise + [rise[-1] - 3, rise[-1] - 7, rise[-1] - 11, rise[-1] - 15]          # four hard down days, still above 200d SMA
+    ex, en = mean_reversion(_ctx_p({"AAA": mkbars(dip)}))
+    assert not ex and [e.symbol for e in en] == ["AAA"] and en[0].signals["down_days"] >= 3 and en[0].qty > 0
+    assert mean_reversion(_ctx_p({"AAA": mkbars(rise)}))[1] == []                    # no pullback, no entry
+    popped = dip + [dip[-1] + 12]
+    pos = {"AAA": {"qty": 10, "avg": dip[-1], "state": {"entry_date": mkbars(dip)[-1]["t"], "entry_px": dip[-1]}}}
+    ex, _ = mean_reversion(_ctx_p({"AAA": mkbars(popped)}, positions=pos))
+    assert ex and "5d SMA" in ex[0].rule or "RSI2" in ex[0].rule
+    stop = {"AAA": {"qty": 10, "avg": 150, "state": {"entry_date": "2025-01-01", "entry_px": 150.0}}}
+    ex, _ = mean_reversion(_ctx_p({"AAA": mkbars([150.0] * 20 + [100.0])}, positions=stop))
+    assert any("hard stop" in e.rule for e in ex)
+
+
+def test_breakout_needs_new_high_volume_and_tight_base():
+    from trader.strategy.paper_rules import breakout
+    base = [100.0] * 60
+    vols = [1000.0] * 59 + [2200.0]
+    closes = base[:-1] + [103.0]
+    highs = [100.4] * 59 + [103.5]
+    lows = [99.6] * 59 + [101.0]
+    ex, en = breakout(_ctx_p({"BBB": mkbars(closes, vols, highs, lows)}))
+    assert [e.symbol for e in en] == ["BBB"] and en[0].stop_price < 103 and en[0].qty > 0
+    assert breakout(_ctx_p({"BBB": mkbars(closes, [1000.0] * 60, highs, lows)}))[1] == []     # no volume
+    pos = {"BBB": {"qty": 5, "avg": 103, "state": {"entry_date": mkbars(closes)[0]["t"], "entry_px": 103.0}}}
+    broke = mkbars(closes + [98.0], vols + [1000.0], highs + [99.0], lows + [97.0])
+    assert breakout(_ctx_p({"BBB": broke}, positions=pos))[0]                                   # closed below the 20-day low
+
+
+def test_trend_following_enters_weekly_and_exits_on_100d_break():
+    from trader.strategy.paper_rules import trend_following
+    up = [50 + i * 1.0 for i in range(260)]
+    ex, en = trend_following(_ctx_p({"SPY": mkbars(up)}, universe=["SPY"]))
+    assert [e.symbol for e in en] == ["SPY"] and en[0].signals["adx14"] > 20
+    assert trend_following(_ctx_p({"SPY": mkbars(up)}, universe=["SPY"], entries_allowed=False))[1] == []
+    pos = {"SPY": {"qty": 5, "avg": 300, "state": {}}}
+    crash = up + [150.0, 140.0]
+    ex, _ = trend_following(_ctx_p({"SPY": mkbars(crash)}, positions=pos, universe=["SPY"]))
+    assert ex and "100d" in ex[0].rule
+
+
+def test_earnings_drift_requires_beat_gap_and_recency():
+    from trader.strategy.paper_rules import earnings_drift
+    closes = [100.0] * 36 + [106.0, 107.0]                    # report after close on bar 35, gap up on bar 36
+    opens = [100.0] * 36 + [105.0, 106.5]
+    bars = mkbars(closes, opens=opens, lows=[99.5] * 36 + [104.0, 106.0])
+    detail = {"CCC": {"date": bars[35]["t"], "timing": "pm", "eps_est": 1.0, "eps_actual": 1.2}}
+    ex, en = earnings_drift(_ctx_p({"CCC": bars}, earn_detail=detail))
+    assert [e.symbol for e in en] == ["CCC"] and en[0].state["ref_close"] == 100.0 and en[0].signals["eps_surprise_pct"] == 20.0
+    weak = {"CCC": detail["CCC"] | {"eps_actual": 1.02}}
+    assert earnings_drift(_ctx_p({"CCC": bars}, earn_detail=weak))[1] == []                    # beat under 5%
+    pos = {"CCC": {"qty": 5, "avg": 107, "state": {"entry_date": bars[-1]["t"], "ref_close": 100.0}}}
+    filled = mkbars(closes + [99.0])
+    assert earnings_drift(_ctx_p({"CCC": filled}, positions=pos, earn_detail={}))[0]           # gap filled -> exit
+
+
+def test_run_books_executes_through_guard_and_journals(tmp_path):
+    from trader.paper_runner import run_books
+    cfg = Config(db_path=str(tmp_path / "pr.db"))
+    j = Journal(cfg.db_path)
+    now = datetime(2026, 10, 6, 20, 0, tzinfo=timezone.utc)
+    controls.start(j, "mean-reversion", 30, now.date())
+    rise = [100 + i * 0.5 for i in range(246)]
+    dip = rise + [rise[-1] - 3, rise[-1] - 7, rise[-1] - 11, rise[-1] - 15]
+    data = {"bars": {"AAA": mkbars(dip)}, "scan_symbols": ["AAA"], "earn_days": {}, "earn_detail": {}}
+    lines = []
+    s = run_books(cfg, j, now, data, lines.append)
+    assert s["mean-reversion"]["entries"] == 1 and "BUY" in "\n".join(lines)
+    assert "trend-following" not in s                                  # never started -> skipped, not run
+    held = PaperBroker(cfg, j, "mean-reversion").account().positions
+    assert held and held[0].symbol == "AAA" and held[0].qty * held[0].price <= 100_000 * 0.1 + 1   # 10% cap
+    assert j.get("mean-reversion:pos:AAA") and json.loads(j.get("mean-reversion:pos:AAA"))["entry_px"] == dip[-1]
+    row = j.db.execute("SELECT signals, approved FROM decisions WHERE book='mean-reversion'").fetchone()
+    assert row["approved"] == 1 and "rsi2" in row["signals"]
+    s2 = run_books(cfg, j, now + timedelta(days=1), data, lines.append)  # same data again: already held, nothing new
+    assert s2["mean-reversion"]["entries"] == 0
+
+
+def test_alerts_off_without_topic_and_never_raise():
+    from trader.alerts import notify
+    assert notify(Config(), "t", "m") is False
+    sent = []
+    class R:
+        def close(self): pass
+    assert notify(Config(ntfy_topic="abc"), "t", "m", opener=lambda req, timeout: (sent.append(req.full_url), R())[1]) is True
+    assert sent == ["https://ntfy.sh/abc"]
+    def boom(req, timeout): raise OSError("down")
+    assert notify(Config(ntfy_topic="abc"), "t", "m", opener=boom) is False

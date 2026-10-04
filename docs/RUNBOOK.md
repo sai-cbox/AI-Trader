@@ -36,6 +36,20 @@ trader run
 Prints what the analyst proposed, the code-side fact check, the guard verdict, token cost, and "WOULD PLACE (dry run)".
 Everything is journaled. The script stops calling Claude once the day's estimated spend reaches `analyst_daily_cap_usd`.
 
+## Paper strategies (4 mechanical strategies, paper money only)
+```
+trader start --paper     # once
+trader paper-run         # run after the close (1:15 PM PT or later); safe to run more than once a day
+trader report --book breakout
+```
+Rules are exactly those in `strategies/*.md`, coded without any LLM, so results are repeatable and cost nothing.
+Paper fills happen at the latest close plus slippage, which is optimistic: treat paper results as an upper bound.
+
+## Phone alerts (optional, free)
+1. Install the ntfy app (iOS/Android), tap "+", and subscribe to a topic name you invent, e.g. `ait-` plus 16 random characters.
+2. Put the same string in `config/default.toml` as `ntfy_topic = "..."`. Never put balances or secrets in alerts (anyone who guesses the topic can read it).
+3. `trader alerts-test` should buzz your phone.
+
 ## Engine commands (paper/live bookkeeping)
 `trader start|stop|pause|resume`, `trader status`, `trader check`, `trader paper-order`, `trader report`,
 `trader dashboard` (local, 127.0.0.1) and `trader dashboard --export file.html`.

@@ -112,7 +112,8 @@ def parse_bars(p: dict, symbol: str | None = None) -> list[dict]:
     bars = []
     for b in _chrono(list(res["bars"])):
         tkey = next((k for k, v in b.items() if _timey(k) and isinstance(v, str)), None)
-        bars.append({"t": (b[tkey][:10] if tkey else None), "close": num(pick(b, "close_price", "close", "c", what="bar close")),
+        bars.append({"t": (b[tkey][:10] if tkey else None), "open": num(b.get("open_price") or b.get("open") or b.get("o")),
+                     "close": num(pick(b, "close_price", "close", "c", what="bar close")),
                      "high": num(pick(b, "high_price", "high", "h", what="bar high")),
                      "low": num(pick(b, "low_price", "low", "l", what="bar low")),
                      "volume": num(pick(b, "volume", "v", what="bar volume"))})
@@ -131,6 +132,19 @@ def parse_fundamentals(p: dict) -> dict[str, dict]:
 
 def parse_scan(p: dict) -> list[dict]:
     return [{"symbol": x["ticker"], "columns": x.get("columns", {})} for x in p["data"]["result"]["results"]]
+
+
+def parse_earnings_detail(p: dict) -> dict[str, dict]:
+    """symbol -> {date, timing, eps_est, eps_actual} for the most recent report in the window."""
+    out: dict[str, dict] = {}
+    for r in p["data"]["results"]:
+        rep = r.get("report") or {}
+        d = rep.get("date")
+        eps = r.get("eps") or {}
+        if d and (r["symbol"] not in out or d > out[r["symbol"]]["date"]):
+            out[r["symbol"]] = {"date": d, "timing": rep.get("timing"), "eps_est": num(eps.get("estimate")),
+                                "eps_actual": num(eps.get("actual"))}
+    return out
 
 
 def parse_earnings(p: dict) -> dict[str, str]:

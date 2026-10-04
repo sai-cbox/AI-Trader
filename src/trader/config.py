@@ -31,6 +31,7 @@ class Config:
     db_path: str = "data/trader.db"
     ai_symbols: tuple[str, ...] = ("NVDA", "AMD", "AVGO", "ARM", "SMCI", "MRVL", "ANET", "VRT", "NBIS", "CIEN", "NOW", "SNOW",
                                    "PLTR", "APP", "CRM", "DDOG", "MDB", "IREN", "CORZ", "HUT", "NNE", "CCJ", "BWXT", "CEG", "VST")
+    ntfy_topic: str = ""       # phone alerts via ntfy.sh; empty = off
     scan_id: str = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # saved Robinhood scan used by the momentum-quality skill
     max_candidates: int = 20
     max_per_sector_candidates: int = 4

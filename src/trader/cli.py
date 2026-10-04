@@ -76,6 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("run", help="PHASE 1c: data -> analyst -> guard -> journal. DRY-RUN ONLY: no order code exists yet")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
     s.add_argument("--no-analyst", action="store_true", help="stop after the data step")
+    s = sub.add_parser("paper-run", help="run the 4 paper strategies on today's data (paper only; no real orders)")
+    s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
+    s.add_argument("--only", default=None, help="one strategy name")
+    s = sub.add_parser("alerts-test", help="send a test phone alert via ntfy (needs ntfy_topic in config)")
     s = sub.add_parser("dashboard", help="serve the monitoring dashboard or export a static snapshot")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--export", metavar="FILE.html")
 
@@ -184,6 +188,15 @@ def main(argv: list[str] | None = None) -> int:
         from .pipeline import run_pipeline
         return asyncio.run(run_pipeline(cfg, j, with_analyst=(a.cmd == "run" and not a.no_analyst),
                                         port=a.port, token_file=a.token_file))
+    elif a.cmd == "paper-run":
+        import asyncio
+        from .paper_runner import paper_run
+        return asyncio.run(paper_run(cfg, j, a.port, a.token_file, a.only))
+    elif a.cmd == "alerts-test":
+        from .alerts import notify
+        ok = notify(cfg, "AI-Trader test", "If you can read this on your phone, alerts work.")
+        print("sent" if ok else "NOT sent (ntfy_topic empty in config, or no network)")
+        return 0 if ok else 1
     elif a.cmd == "dashboard":
         from . import dashboard
         if a.export:
