@@ -408,3 +408,21 @@ def test_auth_check_reports_fail_closed_without_network(capsys, monkeypatch):
     monkeypatch.setattr(authcheck, "connect_read_only", boom)
     assert asyncio.run(authcheck.run_auth_check(Config())) == 1
     assert "NOT READY" in capsys.readouterr().out
+
+
+def test_probe_outline_hides_values_and_extra_allowed_is_explicit():
+    import asyncio
+    from trader.robinhood.client import ReadOnlySession, WriteBlocked
+    from trader.robinhood.probe import outline
+
+    txt = "\n".join(outline({"data": {"total_value": "2002.22", "cash": 1588.03, "state": "filled",
+                                      "account_number": "929366227", "orders": [{"side": "buy", "qty": "3"}]}}))
+    assert "2002" not in txt and "1588" not in txt and "929366227" not in txt   # no amounts / account numbers
+    assert 'state: string e.g. "filled"' in txt and "orders: list[1]" in txt
+
+    class S:
+        async def call_tool(self, n, a): raise AssertionError("must not reach server")
+    rh = ReadOnlySession(S(), {"run_scan"})
+    for bad in ("place_equity_order", "create_scan", "update_scan_filters", "cancel_equity_order"):
+        with pytest.raises(WriteBlocked):
+            asyncio.run(rh.call(bad))

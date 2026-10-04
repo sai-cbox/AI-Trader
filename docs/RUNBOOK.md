@@ -12,6 +12,13 @@ the Agentic account (shown masked) matching `allowed_account_id`, and a portfoli
 refuses every tool that is not a `get_*` read. Tokens are stored in `~/.config/ai-trader/robinhood_oauth.json` (0600).
 If it fails, send me the printed `[FAIL]` lines (they contain no secrets).
 
+## Phase 1a: probe (read-only; shows the SHAPE of Robinhood replies, no amounts)
+```
+trader probe
+```
+Calls ~20 read tools (portfolio, positions, orders, quotes, indicators, history, fundamentals, earnings, your saved scan).
+Prints field names and types only. Full replies are saved to `data/probe/` on your machine (private, gitignored).
+
 ## Engine commands (paper/live bookkeeping)
 `trader start|stop|pause|resume`, `trader status`, `trader check`, `trader paper-order`, `trader report`,
 `trader dashboard` (local, 127.0.0.1) and `trader dashboard --export file.html`.

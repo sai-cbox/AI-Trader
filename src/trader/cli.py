@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("auth-check", help="PHASE 0: sign in to Robinhood's official MCP server and READ account/portfolio (no orders)")
     s.add_argument("--url"); s.add_argument("--port", type=int, default=8765)
     s.add_argument("--token-file", default=None)
+    s = sub.add_parser("probe", help="PHASE 1a: read-only probe; prints the SHAPE of Robinhood replies (no amounts)")
+    s.add_argument("--url"); s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
     s = sub.add_parser("dashboard", help="serve the monitoring dashboard or export a static snapshot")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--export", metavar="FILE.html")
 
@@ -160,6 +162,10 @@ def main(argv: list[str] | None = None) -> int:
         import asyncio
         from .robinhood.authcheck import run_auth_check
         return asyncio.run(run_auth_check(cfg, a.url, a.port, a.token_file))
+    elif a.cmd == "probe":
+        import asyncio
+        from .robinhood.probe import run_probe
+        return asyncio.run(run_probe(cfg, a.url, a.port, a.token_file))
     elif a.cmd == "dashboard":
         from . import dashboard
         if a.export:

@@ -52,14 +52,15 @@ def parse_tool_result(result: Any) -> Any:
 class ReadOnlySession:
     """Wraps an MCP ClientSession; only read tools can be called."""
 
-    def __init__(self, session: Any):
+    def __init__(self, session: Any, extra_allowed: frozenset[str] | set[str] = frozenset()):
         self._s = session
+        self._extra = frozenset(extra_allowed)  # explicit, named read-style tools only (e.g. run_scan)
 
     async def tools(self) -> list[str]:
         return [t.name for t in (await self._s.list_tools()).tools]
 
     async def call(self, tool: str, arguments: dict | None = None) -> Any:
-        if not is_read_only(tool):
+        if not (is_read_only(tool) or tool in self._extra):
             raise WriteBlocked(f"{tool!r} is not a read-only tool; blocked in read-only mode")
         return parse_tool_result(await self._s.call_tool(tool, arguments or {}))
 
@@ -135,7 +136,8 @@ def _wait_for_callback(port: int, timeout: float) -> tuple[str, str | None]:
 
 
 @asynccontextmanager
-async def connect_read_only(url: str = SERVER_URL, port: int = 8765, token_file: str | Path | None = None):
+async def connect_read_only(url: str = SERVER_URL, port: int = 8765, token_file: str | Path | None = None,
+                            extra_allowed: frozenset[str] | set[str] = frozenset()):
     """Open an authorized, READ-ONLY session. First run opens a browser for one-time approval."""
     from mcp import ClientSession
     from mcp.client.auth import OAuthClientProvider
@@ -165,4 +167,4 @@ async def connect_read_only(url: str = SERVER_URL, port: int = 8765, token_file:
     async with streamablehttp_client(url, auth=provider) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            yield ReadOnlySession(session)
+            yield ReadOnlySession(session, extra_allowed)
