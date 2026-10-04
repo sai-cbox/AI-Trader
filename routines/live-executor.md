@@ -10,6 +10,8 @@ docs in DASH collection `live_orders` with status `approved`. Never invent, resi
 2. Expiry: any `live_orders` doc with status awaiting_approval or approved whose `ts` is before today's market open
    (PT) => update it to status "expired". Never execute an expired order.
 3. For each doc with status `approved` (oldest first), sells before buys:
+   0. Veto window: if the doc's approval_mode is "auto", only act on it once `ts` is at least 10 minutes old, so Sai has
+      time to Reject it on the dashboard after the proposal email. (approval_mode "user" = he tapped Approve: act now.)
    a. Fresh data: get_portfolio, get_equity_positions, get_equity_quotes. Build the account JSON and run
       `$T snapshot --book momentum-quality`.
    b. Re-check with the engine using the doc's own fields as the proposal (symbol, side, qty, limit_price=limit,

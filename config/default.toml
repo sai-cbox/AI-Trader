@@ -37,4 +37,4 @@ one_per_sector = true
 max_ai_names = 2
 no_add = true                  # skill: never average down
 required_phases = ["market", "fundamentals", "trend_template", "extension", "stage2", "momentum"]
-confirm_days = 2               # first 2 calendar days: ask the user before EVERY live order
+confirm_days = 0               # 0 = fully automatic (user chose to skip the 2-day approval period); set to N to ask first N days after the first fill

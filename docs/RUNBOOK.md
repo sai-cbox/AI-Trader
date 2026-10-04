@@ -37,6 +37,7 @@ Robinhood is reached through MCP tools in the agent session. The engine (`trader
 
 
 ## Cloud operation (scheduled routines)
+Live mode is fully automatic (`confirm_days = 0`): proposals are auto-approved, with a 10-minute veto window on the dashboard.
 Routine prompts live in `routines/` (common boot + paper-strategies, live-proposer, live-executor). State is kept per
 strategy in the dashboard database (`state/<book>`) because every cloud run starts in a fresh container; the dashboard
 page also reads `books/<book>`, `live_orders` and `control/engine`. See `routines/common.md`.

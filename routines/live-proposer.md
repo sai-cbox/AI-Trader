@@ -34,6 +34,8 @@ The Executor routine is the only thing that places orders.
 8. FINAL MESSAGE = email to Sai. If any order is `awaiting_approval`:
    subject line 1: "Approval needed: <n> live trade(s) — <SYMBOL list>". Then for each: BUY/SELL qty SYMBOL limit $x,
    stop $y, target $z, risk $ and % of account, one-line why, and which of the six skill phases passed.
-   Then: "Approve or reject on the dashboard: https://claude.ai/artifact/8QF5i8FpWPRuswKoJvcXMC (tap Approve). Unapproved
+   If every order is auto-approved (confirm period off), instead say: "Auto-approved: executes from <ts+10min> unless you
+   Reject it (or STOP ALL) on the dashboard: <link>", and list the same trade details.
+   Then (for orders awaiting approval): "Approve or reject on the dashboard: https://claude.ai/artifact/8QF5i8FpWPRuswKoJvcXMC (tap Approve). Unapproved
    orders expire at today's close." If nothing was proposed, one line: "Live proposals: nothing qualifies — <regime>."
    Plain text, under 250 words. Rules-based output, not financial advice.
