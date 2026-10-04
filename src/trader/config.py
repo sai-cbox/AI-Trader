@@ -29,6 +29,8 @@ class Config:
     window_trading_days: int = 30
     symbol_denylist: tuple[str, ...] = ()
     db_path: str = "data/trader.db"
+    ai_symbols: tuple[str, ...] = ("NVDA", "AMD", "AVGO", "ARM", "SMCI", "MRVL", "ANET", "VRT", "NBIS", "CIEN", "NOW", "SNOW",
+                                   "PLTR", "APP", "CRM", "DDOG", "MDB", "IREN", "CORZ", "HUT", "NNE", "CCJ", "BWXT", "CEG", "VST")
     scan_id: str = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # saved Robinhood scan used by the momentum-quality skill
     max_candidates: int = 20
     analyst_model: str = "claude-opus-5-5"
@@ -75,6 +77,8 @@ def load_config(path: str | Path | None = None) -> Config:
     unknown = set(raw) - {f.name for f in fields(Config)}
     if unknown:
         raise ValueError(f"unknown config keys: {sorted(unknown)}")
+    if "ai_symbols" in raw:
+        raw["ai_symbols"] = tuple(s.upper() for s in raw["ai_symbols"])
     if "symbol_denylist" in raw:
         raw["symbol_denylist"] = tuple(s.upper() for s in raw["symbol_denylist"])
     return Config(**raw)

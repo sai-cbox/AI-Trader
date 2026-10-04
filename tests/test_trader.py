@@ -500,7 +500,10 @@ def _ctx(label="CLEAN", macd="POSITIVE_RISING", tt_pass=True, regime="RISK-ON", 
             "sector": "AI Infrastructure"}
     return {"asof": "x", "account_number": "ACC1",
             "account": {"equity": 2000.0, "cash": 1500.0, "buying_power": 1500.0, "position_size": 320.0, "positions": []},
-            "regime": {"state": regime, "reasons": ["r"], "qqq_distribution": False, "facts": {}},
+            "regime": {"state": regime, "reasons": ["r"], "qqq_distribution": False,
+                       "facts": {k: {"price": 600.0, "sma50": 590.0, "sma200": 550.0, "ema50": 595.0, "ema100": 585.0,
+                                     "dist_days": 2, "dist_dates": ["2026-09-30"], "new_low_5d": False, "last_bar": "2026-10-02"}
+                                 for k in ("SPY", "QQQ")}},
             "funnel": {"scan_matches": 1, "affordable": 1, "after_earnings_filter": 1, "finalists": 1},
             "candidates": [cand], "holdings": [], "candidate_errors": []}
 
@@ -582,3 +585,22 @@ def test_analyst_schema_is_valid_json_schema():
     jsonschema.Draft202012Validator.check_schema(SCHEMA)
     payload = ds.model_dump(); payload["decisions"][0]["phases"] = {k: v for k, v in payload["decisions"][0]["phases"].items()}
     jsonschema.validate(payload, SCHEMA)
+
+
+def test_existing_holding_sector_and_ai_flag_reach_the_guard(live):
+    cfg, j, g = live
+    held = [Position("ANET", 2, 211.0, sector="Electronic Technology", is_ai=True)]
+    a = lacct(equity=2000, cash=1500, positions=held)
+    d = g.check(LB, lbuy("MRVL", px=280, sector="Electronic Technology", ai=True, stop=265), a, 280, LATER)
+    assert not d.approved and "sector Electronic Technology already held" in d.reasons[0]
+    d = g.check(LB, lbuy("PAYC", px=244, sector="Technology Services", ai=False, stop=230, qty=1), a, 244, LATER + timedelta(minutes=10))
+    assert d.approved
+
+
+def test_distribution_dates_and_config_ai_list():
+    from trader.strategy.momentum import distribution_dates
+    bars = _bars([100, 100, 99, 98], [1000, 1000, 1100, 1200])
+    for i, b in enumerate(bars):
+        b["t"] = f"2026-10-0{i + 1}"
+    assert distribution_dates(bars) == ["2026-10-03", "2026-10-04"]
+    assert "ANET" in Config().ai_symbols

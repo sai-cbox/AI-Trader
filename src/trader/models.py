@@ -37,6 +37,8 @@ class Position:
     symbol: str
     qty: float
     price: float  # last mark
+    sector: str | None = None
+    is_ai: bool = False
 
 
 @dataclass

@@ -33,6 +33,10 @@ def print_context(ctx: dict, log=print) -> None:
     f = ctx["funnel"]
     log(f"FUNNEL: scan {f['scan_matches']} -> affordable {f['affordable']} -> after earnings filter "
         f"{f['after_earnings_filter']} -> finalists {f['finalists']}")
+    for sym in ("SPY", "QQQ"):
+        x = r["facts"][sym]
+        log(f"  {sym}: price {x['price']:.2f} | 50d {x['sma50']:.2f} | 200d {x['sma200']:.2f} | EMA50 {x['ema50']:.2f} vs EMA100 "
+            f"{x['ema100']:.2f} | distribution days {x['dist_days']} {x.get('dist_dates')} | new 4w low in 5d: {x['new_low_5d']} | last bar {x.get('last_bar')}")
     log("\nCANDIDATES (facts computed by code)")
     log(f"{'SYMBOL':7} {'SECTOR':22} {'PRICE':>8} {'TREND':>6} {'EXT(ATR)':>10} {'MACD':16} {'RS30':>6} {'SHARES':>6}")
     for c in ctx["candidates"]:
@@ -71,6 +75,8 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
     if not with_analyst:
         log("\nRESULT: DATA STEP OK. (No Claude call, no orders.)"); return 0
 
+    if ctx["regime"]["state"] == "RISK-OFF" and not ctx["holdings"]:
+        log("\nRESULT: RISK-OFF and no holdings: nothing the strategy can do. No Claude call (saves cost). No orders."); return 0
     guard = RiskGuard(cfg, j)
     j.set("market_regime", ctx["regime"]["state"]); j.set("market_regime_ts", now.isoformat())
     spent = _today_cost(j, now)
@@ -86,14 +92,16 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
 
     held = {p["symbol"]: p for p in ctx["account"]["positions"]}
     price_of = {h["symbol"]: h.get("price") or held[h["symbol"]]["avg"] for h in ctx["holdings"] if "price" in h}
+    meta_of = {h["symbol"]: h for h in ctx["holdings"] if "price" in h}
     acct = Account(ctx["account_number"], ctx["account"]["equity"], ctx["account"]["buying_power"] or ctx["account"]["cash"] or 0,
-                   [Position(s, p["qty"], price_of.get(s) or p["avg"] or 0) for s, p in held.items()])
+                   [Position(s, p["qty"], price_of.get(s) or p["avg"] or 0, (meta_of.get(s) or {}).get("sector"),
+                             s in cfg.ai_symbols) for s, p in held.items()])
     if controls.get_state(j, book) == controls.STOPPED:
         log(f"  (hint: run `trader start --book {book}` once so the guard accepts dry-run decisions)")
     would = 0
     for d in ds.decisions[:cfg.analyst_max_proposals]:
         ok, problems, phases = verify_against_facts(d, ctx)
-        sig = {"phases": phases, "sector": d.sector, "is_ai": d.is_ai, "earnings_days": d.earnings_days, "setup": d.setup,
+        sig = {"phases": phases, "sector": d.sector, "is_ai": bool(d.is_ai or d.symbol in cfg.ai_symbols), "earnings_days": d.earnings_days, "setup": d.setup,
                "exit_rule": d.exit_rule, "analyst": usage}
         cand = next((c for c in ctx["candidates"] if c["symbol"] == d.symbol), None)
         quote = (cand or {}).get("ask") or price_of.get(d.symbol) or d.limit_price

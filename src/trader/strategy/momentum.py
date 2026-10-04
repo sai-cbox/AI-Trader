@@ -59,6 +59,12 @@ def distribution_days(bars: list[dict], lookback: int = 20) -> int:
     return n
 
 
+def distribution_dates(bars: list[dict], lookback: int = 20) -> list[str | None]:
+    seg = bars[-(lookback + 1):]
+    return [cur.get("t") for prev, cur in zip(seg, seg[1:])
+            if cur["close"] <= prev["close"] * 0.998 and cur["volume"] > prev["volume"]]
+
+
 def new_4w_low_recent(bars: list[dict]) -> bool:
     """True if the lowest low of the last 5 sessions undercuts the lowest low of the 15 sessions before them."""
     if len(bars) < 20:

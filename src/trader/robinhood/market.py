@@ -110,7 +110,8 @@ def parse_bars(p: dict, symbol: str | None = None) -> list[dict]:
         raise ShapeError(f"no bars for {symbol}; symbols {[r.get('symbol') for r in results]}")
     bars = []
     for b in _chrono(list(res["bars"])):
-        bars.append({"close": num(pick(b, "close_price", "close", "c", what="bar close")),
+        tkey = next((k for k, v in b.items() if _timey(k) and isinstance(v, str)), None)
+        bars.append({"t": (b[tkey][:10] if tkey else None), "close": num(pick(b, "close_price", "close", "c", what="bar close")),
                      "high": num(pick(b, "high_price", "high", "h", what="bar high")),
                      "low": num(pick(b, "low_price", "low", "l", what="bar low")),
                      "volume": num(pick(b, "volume", "v", what="bar volume"))})
@@ -172,7 +173,8 @@ async def index_facts(f: Fetcher, sym: str, price: float) -> dict:
     b = bars[sym]
     return {"price": price, "sma50": latest_value(sma50), "sma200": latest_value(sma200),
             "ema50": latest_value(ema50), "ema100": latest_value(ema100),
-            "dist_days": m.distribution_days(b), "new_low_5d": m.new_4w_low_recent(b),
+            "dist_days": m.distribution_days(b), "dist_dates": m.distribution_dates(b),
+            "last_bar": b[-1].get("t"), "new_low_5d": m.new_4w_low_recent(b),
             "ret_30d": m.pct_return(b, 21)}
 
 

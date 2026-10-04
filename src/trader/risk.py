@@ -67,7 +67,8 @@ class RiskGuard:
                 "SELECT signals FROM decisions WHERE book=? AND symbol=? AND side='buy' AND approved=1 "
                 "ORDER BY id DESC LIMIT 1", (book, pos.symbol)).fetchone()
             sig = json.loads(row["signals"]) if row else {}
-            out.append({"symbol": pos.symbol, "sector": sig.get("sector"), "is_ai": bool(sig.get("is_ai"))})
+            out.append({"symbol": pos.symbol, "sector": sig.get("sector") or pos.sector,
+                        "is_ai": bool(sig.get("is_ai")) or pos.is_ai})
         return out
 
     def _evaluate(self, book, p: Proposal, a: Account, quote: float, now: datetime) -> Decision:
