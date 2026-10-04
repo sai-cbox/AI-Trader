@@ -142,6 +142,16 @@ def parse_fundamentals(p: dict) -> dict[str, dict]:
     return out
 
 
+def parse_orders(p: dict) -> list[dict]:
+    out = []
+    for o in p["data"].get("orders", []):
+        out.append({"id": o.get("id"), "symbol": o.get("symbol"), "side": o.get("side"), "type": o.get("type"), "state": o.get("state"),
+                    "qty": num(o.get("quantity")), "filled": num(o.get("cumulative_quantity")), "price": num(o.get("price")),
+                    "avg_price": num(o.get("average_price")), "stop_price": num(o.get("stop_price")), "tif": o.get("time_in_force"),
+                    "created": (o.get("created_at") or "")[:19], "placed_by": o.get("placed_agent")})
+    return out
+
+
 def parse_scan(p: dict) -> list[dict]:
     return [{"symbol": x["ticker"], "columns": x.get("columns", {})} for x in p["data"]["result"]["results"]]
 
@@ -201,6 +211,7 @@ async def index_facts(f: Fetcher, sym: str, price: float) -> dict:
     return {"price": price, "sma50": latest_value(sma50), "sma200": latest_value(sma200),
             "ema50": latest_value(ema50), "ema100": latest_value(ema100),
             "dist_days": m.distribution_days(b), "dist_dates": m.distribution_dates(b),
+            "series": [{"t": x.get("t"), "close": x["close"]} for x in b[-120:]] if sym == "SPY" else None,
             "last_bar": b[-1].get("t"), "new_low_5d": m.new_4w_low_recent(b),
             "ret_30d": m.pct_return(b, 21)}
 
@@ -234,6 +245,11 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
     acct_no = acct["account_number"]
     pf = parse_portfolio(await f.call("get_portfolio", {"account_number": acct_no}))
     positions = parse_positions(await f.call("get_equity_positions", {"account_number": acct_no}))
+    orders: list[dict] = []
+    try:  # order history is for the dashboard only; never block the run on it
+        orders = parse_orders(await f.call("get_equity_orders", {"account_number": acct_no}))
+    except Exception as e:
+        log(f"[data] WARNING order history unavailable ({type(e).__name__})")
     equity = pf["total"]
     pos_pct = cfg.opt(book, "max_position_pct", cfg.max_position_pct)
     position_size = equity * pos_pct / 100
@@ -242,7 +258,9 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
 
     quotes = parse_quotes(await f.call("get_equity_quotes", {"symbols": ["SPY", "QQQ"]}))
     spy, qqq = await asyncio.gather(index_facts(f, "SPY", quotes["SPY"]["last"]), index_facts(f, "QQQ", quotes["QQQ"]["last"]))
-    reg = m.regime(spy, qqq)
+    spy_series = spy.pop("series", None)
+    spy["series"] = spy_series
+    reg = m.regime({k: v for k, v in spy.items() if k != "series"}, qqq)
     log(f"[data] market regime: {reg.state}  ({'; '.join(reg.reasons)})")
 
     scan = parse_scan(await f.call("run_scan", {"scan_id": cfg.scan_id}))
@@ -342,4 +360,5 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
             "account": {"equity": equity, "cash": pf["cash"], "buying_power": pf["buying_power"], "position_size": position_size,
                         "stop_pct": stop_pct, "positions": positions},
             "regime": {"state": reg.state, "reasons": reg.reasons, "qqq_distribution": reg.qqq_distribution, "facts": reg.facts},
+            "orders": orders[:25], "spy_series": spy.get("series") or [],
             "funnel": funnel, "candidates": cands, "extended_skipped": extended[:8], "holdings": holdings, "candidate_errors": errors}

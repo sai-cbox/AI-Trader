@@ -6,10 +6,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import controls
+from . import controls, records
 from .config import Config
 from .journal import Journal
 from .reporting import build_report, open_positions, realized_trades
+from .strategy.info import INFO
+from .risk import ET
+from datetime import datetime, timezone
 
 STRATEGY_DIR = Path(__file__).resolve().parents[2] / "strategies"
 HTML_PATH = Path(__file__).with_name("dashboard.html")
@@ -88,8 +91,55 @@ def book_detail(j: Journal, cfg: Config, book: str, limit: int = 100) -> dict:
             "closed": realized_trades(fills)[-50:][::-1]}
 
 
+def _spy_curve(j: Journal, start_ts: str | None) -> list[dict]:
+    spy = records.load(j, "spy:series", {}) or {}
+    if not spy or not start_ts:
+        return []
+    start_day = start_ts[:10]
+    days = [(d, v) for d, v in sorted(spy.items()) if d >= start_day]
+    if not days:
+        return []
+    base = days[0][1]
+    return [{"ts": d, "ret_pct": (v / base - 1) * 100} for d, v in days]
+
+
+def full_state(j: Journal, cfg: Config, now: datetime | None = None) -> dict:
+    """Everything the 7-page dashboard needs in one JSON document."""
+    now = now or datetime.now(timezone.utc)
+    ov = overview(j, cfg)
+    books = {}
+    for b in cfg.books:
+        d = book_detail(j, cfg, b)
+        d["info"] = INFO.get(b, {})
+        books[b] = d
+    live = cfg.live_book
+    snaps = [s for b in cfg.books for s in j.snapshots(b)[:1]]
+    start = min((s["ts"] for s in snaps), default=None)
+    day = now.astimezone(ET).date().isoformat()
+    orders_today = {b: sum(1 for r in j.approved_decisions(b)
+                           if datetime.fromisoformat(r["ts"]).astimezone(ET).date().isoformat() == day) for b in cfg.books}
+    peak = float(j.get(f"{live}:peak_equity", "0") or 0) if live else 0
+    live_eq = books[live]["summary"]["equity"] if live else None
+    day_start = float(j.get(f"{live}:day_start_equity", "0") or 0) if live else 0
+    acct = records.load(j, "account:snapshot")
+    limits = {
+        "daily_loss_limit_pct": cfg.daily_loss_limit_pct, "drawdown_stop_pct": cfg.drawdown_stop_pct,
+        "max_orders_per_day": cfg.max_orders_per_day,
+        "max_invested_pct": cfg.opt(live, "max_invested_pct", cfg.max_invested_pct) if live else None,
+        "daily_pnl_pct": ((live_eq / day_start - 1) * 100) if live_eq and day_start else 0.0,
+        "drawdown_pct": ((peak - live_eq) / peak * 100) if peak and live_eq else 0.0,
+        "invested_pct": (acct["invested"] / acct["total"] * 100) if acct and acct.get("total") else None,
+        "orders_today": orders_today.get(live, 0) if live else 0,
+    }
+    jobs = {n: records.load(j, f"job:{n}") for n in ("paper-run", "data-check", "live-run")}
+    return {"now": now.isoformat(), "overview": ov, "books": books, "order": list(cfg.books), "live_book": live,
+            "account": acct, "live_run": records.load(j, "live:last_run"),
+            "spy": _spy_curve(j, start), "jobs": jobs, "limits": limits, "start": start,
+            "live_execution": cfg.live_execution, "stop_file": ov["stop_file"], "regime": ov["regime"]}
+
+
 def snapshot(j: Journal, cfg: Config) -> dict:
-    return {"overview": overview(j, cfg), "books": {b: book_detail(j, cfg, b) for b in cfg.books}}
+    return full_state(j, cfg)
 
 
 def render_html(snap: dict | None = None) -> str:
@@ -116,6 +166,8 @@ def serve(cfg: Config, port: int = 8765) -> None:
             j = Journal(cfg.db_path)
             if u.path == "/":
                 self._send(200, render_html(), "text/html; charset=utf-8")
+            elif u.path == "/api/state":
+                self._send(200, json.dumps(full_state(j, cfg), default=str))
             elif u.path == "/api/overview":
                 self._send(200, json.dumps(overview(j, cfg), default=str))
             elif u.path == "/api/book":

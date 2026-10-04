@@ -876,3 +876,39 @@ def test_paper_slippage_shows_up_as_a_cost_and_dashboard_reports_open_positions(
     ov = dashboard.overview(j, cfg)
     row = next(x for x in ov["books"] if x["book"] == "breakout")
     assert row["open_positions"] == 1 and row["trades"] == 0 and ov["live_execution"] == "off"
+
+
+def test_pipeline_stores_dashboard_records_and_full_state(tmp_path):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from trader import dashboard, records
+    from trader.analyst import DecisionSet
+    from trader.pipeline import run_pipeline
+    cfg = Config(db_path=str(tmp_path / "r.db"), allowed_account_id="ACC1",
+                 overrides=OV | {"momentum-quality": OV["momentum-quality"] | {"confirm_days": 0}})
+    j = Journal(cfg.db_path)
+    now = datetime(2026, 10, 6, 14, 0, tzinfo=timezone.utc)
+    controls.start(j, LB, 30, now.date())
+
+    @asynccontextmanager
+    async def fake_connect(*a, **k):
+        yield object()
+
+    async def fake_build(rh, cfg, book, log, now):
+        c = _ctx()
+        c["spy_series"] = [{"t": "2026-10-05", "close": 600.0}, {"t": "2026-10-06", "close": 606.0}]
+        c["orders"] = []
+        return c
+
+    lines = []
+    assert asyncio.run(run_pipeline(cfg, j, True, connect=fake_connect, build=fake_build, log=lines.append, now=now,
+                                    analyst_fn=lambda c, x: (DecisionSet(summary="sum", decisions=[_decision()]),
+                                                             {"input_tokens": 1, "output_tokens": 1, "cost_usd": 0.01}))) == 0
+    assert not any("could not store" in l for l in lines), lines
+    st = dashboard.full_state(j, cfg, now)
+    assert st["account"]["account"].startswith("••••") and st["live_run"]["summary"] == "sum"
+    assert st["jobs"]["live-run"]["ok"] and st["live_book"] == LB and set(st["order"]) == set(cfg.books)
+    assert st["books"][LB]["info"]["name"] and "daily_pnl_pct" in st["limits"]
+    assert st["books"][LB]["decisions"] and records.load(j, "spy:series")["2026-10-06"] == 606.0
+    import json as _j
+    _j.dumps(st, default=str)

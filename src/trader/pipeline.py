@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from . import controls
+from . import controls, records
 from .analyst import AnalystError, DecisionSet, call_analyst, verify_against_facts
 from .config import Config
 from .journal import Journal
@@ -75,8 +75,17 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
         for x in leaf_errors(e):
             log(f"[FAIL] {type(x).__name__}: {str(x)[:300]}")
         log("\nRESULT: DATA STEP FAILED. Nothing was traded. Send me the [FAIL] lines.")
+        records.record_job(j, "live-run" if with_analyst else "data-check", False, "data step failed", now)
         return 1
     print_context(ctx, log)
+    job = "live-run" if with_analyst else "data-check"
+    try:
+        records.save(j, "account:snapshot", records.account_snapshot(ctx, now))
+        records.store_spy(j, ctx.get("spy_series") or [])
+        records.save(j, "live:last_run", records.live_run_record(ctx, now))
+        records.record_job(j, job, True, f"regime {ctx['regime']['state']}, {len(ctx['candidates'])} candidates", now)
+    except Exception as e:
+        log(f"[data] WARNING could not store dashboard records ({type(e).__name__}: {e})")
     try:  # record real equity: baseline for the daily-loss and drawdown limits, and for the dashboard
         held0 = {p["symbol"]: p for p in ctx["account"]["positions"]}
         px0 = {h["symbol"]: h["price"] for h in ctx["holdings"] if "price" in h}
@@ -103,6 +112,9 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
     log(f"\nANALYST: {usage['input_tokens']} in / {usage['output_tokens']} out tokens, about ${usage['cost_usd']:.3f} "
         f"(today ${spent + usage['cost_usd']:.2f} of ${cfg.analyst_daily_cap_usd:.2f} cap)\n  {ds.summary}")
 
+    run_rec = records.load(j, "live:last_run", {}) or {}
+    run_rec.update(summary=ds.summary, analyst_usage=usage)
+    records.save(j, "live:last_run", run_rec)
     held = {p["symbol"]: p for p in ctx["account"]["positions"]}
     price_of = {h["symbol"]: h.get("price") or held[h["symbol"]]["avg"] for h in ctx["holdings"] if "price" in h}
     meta_of = {h["symbol"]: h for h in ctx["holdings"] if "price" in h}

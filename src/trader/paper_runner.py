@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from . import controls
+from . import controls, records
 from .alerts import notify
 from .brokers.paper import PaperBroker
 from .config import Config
@@ -123,12 +123,19 @@ async def paper_run(cfg: Config, j: Journal, port: int = 8765, token_file=None, 
         for x in leaf_errors(e):
             log(f"[FAIL] {type(x).__name__}: {str(x)[:300]}")
         log("\nRESULT: PAPER RUN FAILED. Nothing was changed.")
+        records.record_job(j, "paper-run", False, "data step failed", now)
         notify(cfg, "AI-Trader: paper run FAILED", "Data step failed; no paper trades were made.", "high")
         return 1
     if bars and now.astimezone(ET).weekday() < 5 and (now.astimezone(ET).hour, now.astimezone(ET).minute) < (16, 15):
         log("[data] note: US market is still open, so today's unfinished bar was ignored (decisions use the last completed session)")
     data = {"bars": bars, "scan_symbols": [s for s in scan if s in bars], "earn_days": earn_days, "earn_detail": detail}
     summary = run_books(cfg, j, now, data, log, only)
+    try:
+        if bars.get("SPY"):
+            records.store_spy(j, bars["SPY"])
+        records.record_job(j, "paper-run", True, f"{len(summary)} books, {len(bars)} symbols", now)
+    except Exception as e:
+        log(f"[data] WARNING could not store records ({type(e).__name__})")
     parts = [f"{b}: {v['entries']} buy/{v['exits']} sell, equity {v['equity']:,.0f}" for b, v in summary.items()]
     log("\nRESULT: PAPER RUN complete. " + ("; ".join(parts) if parts else "nothing ran") + ". No real orders exist in this command.")
     if any(v["entries"] or v["exits"] for v in summary.values()):
