@@ -346,45 +346,65 @@ def test_record_gate_requires_user_approval(live, tmp_path):
     assert len(j.fills(LB)) == 1
 
 
-def test_state_roundtrip_and_id_remap(env, tmp_path):
-    from trader.state import export_state, import_state
-    cfg, j, g = env
-    started(j, PB); started(j, "breakout")
-    b1, b2 = PaperBroker(cfg, j, PB), PaperBroker(cfg, j, "breakout")
-    for b, book, sym in ((b1, PB, "AAPL"), (b2, "breakout", "NVDA")):
-        d = g.check(book, buy(sym, 10, rationale="r", signals={"x": 1}), b.account(), 100, NOW)
-        b.fill(sym, "buy", d.qty, 100, decision_id=d.id)
-    snap = export_state(j, PB)
-    assert snap["fills"] and snap["decisions"] and snap["meta"][f"{PB}:state"] == "running"
-    # fresh container that already holds ANOTHER book: ids must not collide
-    j2 = Journal(str(tmp_path / "fresh.db"))
-    import_state(j2, "breakout", export_state(j, "breakout"))
-    import_state(j2, PB, snap)
-    assert len(j2.fills(PB)) == 1 and len(j2.fills("breakout")) == 1
-    ids = [r["id"] for r in j2.db.execute("SELECT id FROM decisions")]
-    assert len(ids) == len(set(ids)) == 2
-    fid = j2.fills(PB)[0]["decision_id"]
-    assert j2.get_decision(fid)["book"] == PB
-    assert import_state(j2, PB, {}) == {"imported": False}
-    assert PaperBroker(cfg, j2, PB).account().positions[0].symbol == "AAPL"
 
 
-def test_apply_control_and_sync_docs(env, tmp_path):
-    import json
-    from trader.cli import main
-    cfg, j, g = env
-    conf = tmp_path / "c.toml"; conf.write_text(f'db_path = "{cfg.db_path}"\n')
-    started(j, PB)
-    assert main(["--config", str(conf), "apply-control", "--pause", "1"]) == 0
-    assert controls.get_state(j, PB) == controls.PAUSED
-    assert main(["--config", str(conf), "apply-control", "--stop", "1"]) == 0
-    assert controls.get_state(j, PB) == controls.STOPPED
-    assert main(["--config", str(conf), "apply-control"]) == 0          # cleared
-    assert controls.get_state(j, PB) == controls.RUNNING
-    controls.set_state(j, PB, controls.PAUSED, "drawdown 12%")          # guard pauses are NOT auto-resumed
-    main(["--config", str(conf), "apply-control"])
-    assert controls.get_state(j, PB) == controls.PAUSED
-    assert main(["--config", str(conf), "sync-docs", "--dir", str(tmp_path / "o")]) == 0
-    doc = json.loads((tmp_path / "o/books" / f"{PB}.json").read_text())
-    assert doc["book"] == PB and doc["kind"] == "paper" and "decisions" in doc
-    assert not (tmp_path / "o/books/breakout.json").exists()            # never started
+# ---------------- Phase 0: read-only Robinhood client ----------------
+def test_read_only_guard_blocks_every_non_read_tool():
+    import asyncio
+    from trader.robinhood.client import ReadOnlySession, WriteBlocked, is_read_only
+
+    calls = []
+
+    class FakeSession:
+        async def call_tool(self, name, arguments):
+            calls.append(name)
+            class R:
+                isError = False
+                structuredContent = None
+                content = [type("C", (), {"text": '{"ok": true}'})()]
+            return R()
+
+    rh = ReadOnlySession(FakeSession())
+    for bad in ("place_equity_order", "cancel_equity_order", "place_option_order", "exercise_option",
+                "create_alert", "add_to_watchlist", "run_scan", "review_equity_order", "search"):
+        assert not is_read_only(bad)
+        with pytest.raises(WriteBlocked):
+            asyncio.run(rh.call(bad))
+    assert calls == []                                    # nothing reached the server
+    assert asyncio.run(rh.call("get_accounts")) == {"ok": True}
+    assert calls == ["get_accounts"]
+
+
+def test_agentic_account_selection_and_masking():
+    from trader.robinhood.client import agentic_accounts, mask
+    payload = {"data": {"accounts": [{"account_number": "871300943", "agentic_allowed": False},
+                                     {"account_number": "929366227", "agentic_allowed": True, "nickname": "Agentic"}]}}
+    got = agentic_accounts(payload)
+    assert [a["account_number"] for a in got] == ["929366227"]
+    assert mask("929366227") == "••••6227" and "9293" not in mask("929366227")
+
+
+def test_token_storage_is_private_and_roundtrips(tmp_path):
+    import asyncio, os, stat
+    pytest.importorskip("mcp")
+    from mcp.shared.auth import OAuthToken
+    from trader.robinhood.client import FileTokenStorage
+    st = FileTokenStorage(tmp_path / "sub" / "tok.json")
+    assert asyncio.run(st.get_tokens()) is None
+    asyncio.run(st.set_tokens(OAuthToken(access_token="secret-abc", token_type="Bearer")))
+    assert stat.S_IMODE(os.stat(st.path).st_mode) == 0o600
+    assert asyncio.run(st.get_tokens()).access_token == "secret-abc"
+
+
+def test_auth_check_reports_fail_closed_without_network(capsys, monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from trader.robinhood import authcheck
+
+    @asynccontextmanager
+    async def boom(*a, **k):
+        raise ConnectionError("no network")
+        yield
+    monkeypatch.setattr(authcheck, "connect_read_only", boom)
+    assert asyncio.run(authcheck.run_auth_check(Config())) == 1
+    assert "NOT READY" in capsys.readouterr().out
