@@ -33,6 +33,9 @@ class Config:
                                    "PLTR", "APP", "CRM", "DDOG", "MDB", "IREN", "CORZ", "HUT", "NNE", "CCJ", "BWXT", "CEG", "VST")
     live_execution: str = "off"   # off | dry-run | live   (no order code exists yet; "off" = decisions only)
     ntfy_topic: str = ""       # phone alerts via ntfy.sh; empty = off
+    email_to: str = ""         # daily summary recipient; empty = email off. Sender is the same Gmail account.
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 465
     scan_id: str = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # saved Robinhood scan used by the momentum-quality skill
     max_candidates: int = 20
     max_per_sector_candidates: int = 4

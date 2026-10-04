@@ -56,3 +56,9 @@ Paper fills happen at the latest close plus slippage, which is optimistic: treat
 Kill switch: `touch data/STOP` (or `trader stop`).
 
 See `docs/SPEC.md` for the full design and guardrails.
+
+## Daily summary email
+1. Google Account > Security > turn on 2-Step Verification, then search "App passwords" and create one (16 letters).
+2. `trader set-email-password` (hidden input; saved to `~/.config/ai-trader/smtp_password`, mode 600).
+3. `trader daily-summary --print` shows the text; `trader daily-summary` sends it to `email_to` in `config/default.toml`.
+Sent straight from your machine to smtp.gmail.com over SSL. Run it after `paper-run` / `data-check` so the numbers are fresh.

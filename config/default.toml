@@ -15,6 +15,7 @@ window_trading_days = 30       # evaluation window
 symbol_denylist = []
 db_path = "data/trader.db"
 live_execution = "off"                             # off | dry-run | live. Orders are never sent unless this is "live" AND the executor exists
+email_to = "psaikirantr@gmail.com"                # daily summary goes here (sent from the same Gmail via an app password)
 ntfy_topic = ""                                    # set to a long random string to get phone alerts (see docs/RUNBOOK.md)
 scan_id = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # your saved Robinhood scan (Russell 3000 quality momentum)
 max_candidates = 20

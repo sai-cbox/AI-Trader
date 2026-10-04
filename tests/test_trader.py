@@ -912,3 +912,35 @@ def test_pipeline_stores_dashboard_records_and_full_state(tmp_path):
     assert st["books"][LB]["decisions"] and records.load(j, "spy:series")["2026-10-06"] == 606.0
     import json as _j
     _j.dumps(st, default=str)
+
+
+def test_daily_summary_text_and_send(tmp_path):
+    from trader import dashboard, mailer
+    cfg = Config(db_path=str(tmp_path / "m.db"), allowed_account_id="ACC1", email_to="me@example.com")
+    j = Journal(cfg.db_path)
+    subject, lines = mailer.build_summary(dashboard.full_state(j, cfg, NOW), NOW)
+    text = "\n".join(lines)
+    assert "daily summary" in subject and "STRATEGIES" in text and "SAFETY" in text and "no account data yet" in text
+
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, context=None, timeout=None): sent["host"] = host
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def login(self, u, p): sent["login"] = (u, p)
+        def send_message(self, m): sent["msg"] = m
+
+    mailer.send_email(cfg, subject, lines, smtp_cls=FakeSMTP, password="pw")
+    assert sent["login"] == ("me@example.com", "pw") and sent["msg"]["To"] == "me@example.com"
+    assert sent["msg"].get_body(("html",)) is not None
+    with pytest.raises(mailer.MailError):
+        mailer.send_email(Config(db_path=cfg.db_path), subject, lines, smtp_cls=FakeSMTP, password="pw")
+
+
+def test_email_password_file_private(tmp_path):
+    import os, stat
+    from trader import mailer
+    f = tmp_path / "pw"
+    mailer.save_password("abcd efgh ijkl mnop", f)
+    assert f.read_text() == "abcdefghijklmnop" and stat.S_IMODE(os.stat(f).st_mode) == 0o600

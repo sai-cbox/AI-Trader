@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("paper-run", help="run the 4 paper strategies on today's data (paper only; no real orders)")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
     s.add_argument("--only", default=None, help="one strategy name")
+    s = sub.add_parser("set-email-password", help="store your Gmail App Password privately (hidden input; file readable only by you)")
+    s = sub.add_parser("daily-summary", help="email today's summary to email_to (use --print to just show it, --test for a test mail)")
+    s.add_argument("--print", dest="print_only", action="store_true", help="print the summary, send nothing")
     s = sub.add_parser("alerts-test", help="send a test phone alert via ntfy (needs ntfy_topic in config)")
     s = sub.add_parser("dashboard", help="serve the monitoring dashboard or export a static snapshot")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--export", metavar="FILE.html")
@@ -192,6 +195,23 @@ def main(argv: list[str] | None = None) -> int:
         import asyncio
         from .paper_runner import paper_run
         return asyncio.run(paper_run(cfg, j, a.port, a.token_file, a.only))
+    elif a.cmd == "set-email-password":
+        import getpass
+        from .mailer import save_password, PW_FILE
+        pw = getpass.getpass("Paste your Gmail App Password (16 letters, input hidden): ").strip()
+        if len(pw.replace(" ", "")) != 16:
+            print("An App Password has 16 letters. Nothing saved."); return 1
+        save_password(pw); print(f"Saved to {PW_FILE} (readable only by you). It is never printed or logged.")
+    elif a.cmd == "daily-summary":
+        from .mailer import MailError, build_summary, daily_summary
+        from .dashboard import full_state
+        if a.print_only:
+            print("\n".join(build_summary(full_state(j, cfg, now), now)[1])); return 0
+        try:
+            daily_summary(cfg, j, now)
+        except MailError as e:
+            print(f"[FAIL] {e}"); return 1
+        print(f"sent to {cfg.email_to}")
     elif a.cmd == "alerts-test":
         from .alerts import notify
         ok = notify(cfg, "AI-Trader test", "If you can read this on your phone, alerts work.")
