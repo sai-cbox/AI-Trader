@@ -46,4 +46,5 @@ class PaperBroker:
         self.j.set(f"{self.book}:cash", str(cash))
         self.j.fill(self.book, symbol, side, qty, px, rationale=rationale,
                     decision_id=decision_id, now=now)
+        self.j.set(f"{self.book}:mark:{symbol}", str(price))   # mark at the market price, not the slipped fill
         return px

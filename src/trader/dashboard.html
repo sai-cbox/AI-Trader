@@ -38,7 +38,7 @@ tr.row{cursor:pointer}tr.row:hover{background:rgba(127,127,127,.08)}tr.sel{backg
 </header>
 <main>
   <div id="banners"></div>
-  <div class="card"><h2>Strategy leaderboard</h2><div class="scroll"><table id="board"></table></div></div>
+  <div class="card"><h2>Strategy leaderboard</h2><p class="mute" style="margin:0 0 10px;font-size:13px"><b>LIVE</b> = the one strategy allowed to trade real money on your Agentic account once order execution is switched on. Right now orders are OFF: it only produces dry-run decisions. <b>paper</b> = simulated $100,000 accounts that never touch Robinhood. "Open" = positions held now; "Closed" = finished trades.</p><div class="scroll"><table id="board"></table></div></div>
   <div class="card"><h2>Return since start (%)</h2><div id="chart"></div><div class="legend" id="legend"></div></div>
   <div id="detail"></div>
   <div class="card"><h2>Recent state changes &amp; warnings</h2><div id="events" class="mute"></div></div>
@@ -70,11 +70,11 @@ function chart(books){
   $("legend").innerHTML=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.name)}${s.live?" (live)":""}</span>`).join("");
 }
 function board(books){
-  $("board").innerHTML=`<tr><th>Strategy</th><th>Mode</th><th>State</th><th>Equity</th><th>Return</th><th>Max DD</th><th>Win rate</th><th>Trades</th><th>Realized P&amp;L</th><th>Window ends</th><th></th></tr>`+
+  $("board").innerHTML=`<tr><th>Strategy</th><th>Mode</th><th>State</th><th>Equity</th><th>Return</th><th>Max DD</th><th>Win rate</th><th>Open</th><th>Closed</th><th>Realized P&amp;L</th><th>Window ends</th><th></th></tr>`+
   books.map((b,i)=>`<tr class="row ${b.book===selected?"sel":""}" data-b="${esc(b.book)}"><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${COLORS[i%5]};margin-right:6px"></i><b>${esc(b.book)}</b><div class="mute" style="font-size:12px;white-space:normal;max-width:320px">${esc(b.description)}</div></td>
   <td><span class="pill ${b.kind==="live"?"live":""}">${b.kind==="live"?"LIVE":"paper"}</span></td><td><span class="pill ${b.state}">${b.state}</span></td>
   <td>${usd(b.equity)}</td><td>${pct(b.return_pct)}</td><td>${b.max_drawdown_pct?b.max_drawdown_pct.toFixed(1)+"%":"–"}</td>
-  <td>${b.win_rate_pct==null?"–":b.win_rate_pct.toFixed(0)+"%"}</td><td>${b.trades}</td><td>${usd(b.realized_pnl)}</td><td class="mute">${esc(b.window[1]||"–")}</td>
+  <td>${b.win_rate_pct==null?"–":b.win_rate_pct.toFixed(0)+"%"}</td><td>${b.open_positions??0}</td><td>${b.trades}</td><td>${usd(b.realized_pnl)}</td><td class="mute">${esc(b.window[1]||"–")}</td>
   <td>${SNAP?"":`<button data-pause="${esc(b.book)}">Pause</button> <button data-stop="${esc(b.book)}">Stop</button>`}</td></tr>`).join("");
   document.querySelectorAll("tr.row").forEach(r=>r.onclick=e=>{if(e.target.tagName==="BUTTON")return;selected=r.dataset.b;refresh();});
   document.querySelectorAll("[data-stop]").forEach(b=>b.onclick=()=>control("stop",b.dataset.stop));
@@ -112,7 +112,7 @@ function detail(d){
 }
 async function refresh(){
   const o=await api("/api/overview"); const books=o.books; if(!selected&&books.length)selected=(books.find(b=>b.approved+b.rejected>0)||books[0]).book;
-  const live=books.find(b=>b.kind==="live"); $("sub").textContent=(live?`· live: ${live.book}`:"")+(o.regime?` · market: ${o.regime}`:"");
+  const live=books.find(b=>b.kind==="live"); const exec=o.live_execution||"off"; $("sub").textContent=(live?`· live strategy: ${live.book} (orders ${exec==="live"?"ON":"OFF - decisions only"})`:"")+(o.regime?` · market: ${o.regime}`:"");
   $("upd").textContent=SNAP?"snapshot":"updated "+new Date().toLocaleTimeString()+"  "; if(SNAP){$("pauseAll").style.display=$("stopAll").style.display="none";}
   const bn=[]; (o.pending_approvals||[]).forEach(d=>bn.push(`Awaiting your approval: ${d.side.toUpperCase()} ${d.qty} ${d.symbol} @ ~$${d.quote} (${d.book}, decision #${d.id}) — reply in chat to approve.`));
   if(o.stop_file)bn.push("STOP file present — all new orders are blocked.");

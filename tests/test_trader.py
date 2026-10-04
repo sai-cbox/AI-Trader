@@ -862,3 +862,17 @@ def test_partial_day_bar_is_dropped_only_while_the_session_is_open():
     sat = datetime(2026, 10, 10, 17, 0, tzinfo=timezone.utc)
     assert drop_partial([{"t": "2026-10-09", "close": 1}], sat) == [{"t": "2026-10-09", "close": 1}]   # weekend: last bar is Friday's
     assert drop_partial([{"t": "2026-10-05", "close": 1}], mid) == [{"t": "2026-10-05", "close": 1}]   # last bar is yesterday: keep
+
+
+def test_paper_slippage_shows_up_as_a_cost_and_dashboard_reports_open_positions(tmp_path):
+    from trader import dashboard
+    cfg = Config(db_path=str(tmp_path / "d.db"), slippage_bps=10.0)
+    j = Journal(cfg.db_path)
+    controls.start(j, "breakout", 30, NOW.date())
+    b = PaperBroker(cfg, j, "breakout")
+    b.fill("AAA", "buy", 100, 50.0)                              # fills at 50.05 (10 bps), marked at 50.00
+    assert b.account().equity == pytest.approx(100_000 - 100 * 0.05)
+    RiskGuard(cfg, j).refresh("breakout", b.account(), NOW)
+    ov = dashboard.overview(j, cfg)
+    row = next(x for x in ov["books"] if x["book"] == "breakout")
+    assert row["open_positions"] == 1 and row["trades"] == 0 and ov["live_execution"] == "off"

@@ -44,6 +44,7 @@ def book_summary(j: Journal, cfg: Config, book: str) -> dict:
         "max_drawdown_pct": rep["max_drawdown_pct"], "win_rate_pct": rep["win_rate_pct"],
         "realized_pnl": rep["realized_pnl"], "trades": rep["closed_lots"],
         "approved": rep["decisions_approved"], "rejected": rep["decisions_rejected"],
+        "open_positions": len(open_positions(j.fills(book))),
         "curve": _curve(j, book),
     }
 
@@ -56,7 +57,7 @@ def overview(j: Journal, cfg: Config) -> dict:
         "AND user_approved_at IS NULL ORDER BY id DESC LIMIT 20")]
     return {"books": [book_summary(j, cfg, b) for b in cfg.books],
             "pending_approvals": pending, "regime": j.get("market_regime"), "regime_ts": j.get("market_regime_ts"),
-            "events": events, "stop_file": controls.kill_file_present(cfg.db_path)}
+"live_execution": cfg.live_execution, "events": events, "stop_file": controls.kill_file_present(cfg.db_path)}
 
 
 def book_detail(j: Journal, cfg: Config, book: str, limit: int = 100) -> dict:

@@ -77,6 +77,14 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
         log("\nRESULT: DATA STEP FAILED. Nothing was traded. Send me the [FAIL] lines.")
         return 1
     print_context(ctx, log)
+    try:  # record real equity: baseline for the daily-loss and drawdown limits, and for the dashboard
+        held0 = {p["symbol"]: p for p in ctx["account"]["positions"]}
+        px0 = {h["symbol"]: h["price"] for h in ctx["holdings"] if "price" in h}
+        RiskGuard(cfg, j).refresh(book, Account(ctx["account_number"], ctx["account"]["equity"],
+                                                ctx["account"]["buying_power"] or ctx["account"]["cash"] or 0,
+                                                [Position(s, p["qty"], px0.get(s) or p["avg"] or 0) for s, p in held0.items()]), now)
+    except Exception as e:
+        log(f"[data] WARNING could not record equity snapshot ({type(e).__name__})")
     if not with_analyst:
         log("\nRESULT: DATA STEP OK. (No Claude call, no orders.)"); return 0
 
