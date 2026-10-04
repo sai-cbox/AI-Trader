@@ -1,5 +1,5 @@
-# Locked to your Robinhood Agentic account. Live mode refuses to trade until set.
-allowed_account_id = ""
+# Live orders are locked to this account number; any other account is rejected.
+allowed_account_id = "929366227"   # "Agentic" cash account (the only one the agent may trade)
 
 start_cash = 100000.0          # starting cash of EACH paper book
 daily_loss_limit_pct = 3.0     # stop NEW buys for the day
@@ -23,3 +23,18 @@ mean-reversion = "paper"
 breakout = "paper"
 trend-following = "paper"
 earnings-drift = "paper"
+
+# Per-strategy rule overrides. momentum-quality mirrors the robinhood-stock-trader skill's hard rules.
+[overrides.momentum-quality]
+max_position_pct = 16.0        # skill: deployable 80% / 5 slots
+max_invested_pct = 80.0        # skill: 20% cash reserve always
+risk_per_trade_pct = 1.0       # skill: 1% of portfolio max risk per trade (needs stop_price)
+max_positions = 5
+limit_only = true              # skill: never market orders
+require_stop = true
+require_regime = true          # skill: no buys unless today's SPY/QQQ regime is RISK-ON
+one_per_sector = true
+max_ai_names = 2
+no_add = true                  # skill: never average down
+required_phases = ["market", "fundamentals", "trend_template", "extension", "stage2", "momentum"]
+confirm_days = 2               # first 2 calendar days: ask the user before EVERY live order

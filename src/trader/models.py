@@ -13,6 +13,8 @@ class Proposal:
     rationale: str = ""
     asset_type: str = "equity"
     signals: dict = field(default_factory=dict)  # indicators / rule hits behind the idea
+    stop_price: float | None = None
+    target_price: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Proposal":
@@ -25,6 +27,8 @@ class Proposal:
             rationale=str(d.get("rationale", "")),
             asset_type=str(d.get("asset_type", "equity")).lower(),
             signals=dict(d.get("signals", {})),
+            stop_price=None if d.get("stop_price") is None else float(d["stop_price"]),
+            target_price=None if d.get("target_price") is None else float(d["target_price"]),
         )
 
 
@@ -69,10 +73,12 @@ class Decision:
     reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     id: int | None = None
+    needs_user_approval: bool = False
 
     def to_dict(self) -> dict:
         return {
             "decision_id": self.id,
+            "needs_user_approval": self.needs_user_approval,
             "approved": self.approved,
             "qty": self.qty,
             "reasons": self.reasons,

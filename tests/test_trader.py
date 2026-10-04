@@ -226,3 +226,118 @@ def test_decision_stores_explanation_and_dashboard(env):
     assert [x["book"] for x in snap["overview"]["books"]] == cfg.books
     html = dashboard.render_html(snap)
     assert "RSI2 oversold" in html and "/*__SNAPSHOT__*/" not in html
+
+
+# ---------------- live strategy: skill-aligned rules ----------------
+PH = {k: {"pass": True, "evidence": "ok"} for k in
+      ("market", "fundamentals", "trend_template", "extension", "stage2", "momentum")}
+OV = {"momentum-quality": dict(
+    max_position_pct=16.0, max_invested_pct=80.0, risk_per_trade_pct=1.0, max_positions=5,
+    limit_only=True, require_stop=True, require_regime=True, one_per_sector=True, max_ai_names=2,
+    no_add=True, required_phases=list(PH), confirm_days=2)}
+
+
+@pytest.fixture
+def live(tmp_path):
+    cfg = Config(db_path=str(tmp_path / "l.db"), allowed_account_id="ACC1", overrides=OV)
+    j = Journal(cfg.db_path)
+    controls.start(j, LB, 30, NOW.date())
+    j.set("market_regime", "RISK-ON"); j.set("market_regime_ts", (NOW + timedelta(days=3)).isoformat())
+    return cfg, j, RiskGuard(cfg, j)
+
+
+def lbuy(sym="NVDA", qty=100, px=100.0, stop=94.0, sector="Semis", ai=False, phases=None, **sig):
+    return Proposal(sym, "buy", qty, "limit", px, stop_price=stop, rationale="r",
+                    signals={"phases": phases if phases is not None else PH, "sector": sector,
+                             "is_ai": ai, **sig})
+
+
+def lacct(equity=10_000, cash=10_000, positions=()):
+    return Account("ACC1", equity, cash, list(positions))
+
+
+LATER = NOW + timedelta(days=3)  # past the 2-day confirm period
+
+
+def test_live_happy_path_sizing_by_1pct_risk(live):
+    cfg, j, g = live
+    d = g.check(LB, lbuy(stop=90), lacct(), 100, LATER)
+    assert d.approved and d.qty == 10  # $100 risk / $10 per share (cap would allow 16)
+    d = g.check(LB, lbuy("AMD", stop=94), lacct(), 100, LATER + timedelta(minutes=10))
+    assert d.qty == 16  # position cap 16% of 10k @ $100
+
+
+def test_live_market_order_and_missing_stop_rejected(live):
+    cfg, j, g = live
+    mkt = lbuy(); mkt.order_type = "market"
+    assert "limit orders only" in g.check(LB, mkt, lacct(), 100, LATER).reasons[0]
+    assert not g.check(LB, lbuy(stop=None), lacct(), 100, LATER + timedelta(minutes=10)).approved
+
+
+def test_live_requires_fresh_risk_on_regime(live):
+    cfg, j, g = live
+    j.set("market_regime", "RISK-OFF")
+    assert "RISK-ON" in g.check(LB, lbuy(), lacct(), 100, LATER).reasons[0]
+    j.set("market_regime", "RISK-ON")
+    j.set("market_regime_ts", NOW.isoformat())  # 3 days old at check time => stale
+    assert "stale" in g.check(LB, lbuy(), lacct(), 100, LATER + timedelta(minutes=1)).reasons[0]
+    j.set("market_regime_ts", LATER.isoformat())
+    assert g.check(LB, lbuy(), lacct(), 100, LATER + timedelta(minutes=2)).approved
+
+
+def test_live_all_phases_must_pass(live):
+    cfg, j, g = live
+    bad = {**PH, "extension": {"pass": False, "evidence": "LATE 1.8 ATR"}}
+    d = g.check(LB, lbuy(phases=bad), lacct(), 100, LATER)
+    assert not d.approved and "extension" in d.reasons[0]
+    missing = {k: v for k, v in PH.items() if k != "stage2"}
+    assert "stage2" in g.check(LB, lbuy(phases=missing), lacct(), 100, LATER + timedelta(minutes=10)).reasons[0]
+
+
+def test_live_portfolio_rules(live):
+    cfg, j, g = live
+    t = LATER
+    a = lacct()
+    d = g.check(LB, lbuy("NVDA", sector="Semis", ai=True), a, 100, t); assert d.approved
+    a = lacct(positions=[Position("NVDA", 10, 100)])
+    t += timedelta(minutes=10)
+    assert "sector" in g.check(LB, lbuy("AMD", sector="Semis"), a, 100, t).reasons[0]       # one per sector
+    assert "no averaging" in g.check(LB, lbuy("NVDA", sector="Other"), a, 100, t).reasons[0]
+    d = g.check(LB, lbuy("PLTR", sector="Software", ai=True), a, 100, t); assert d.approved   # 2nd AI ok
+    a = lacct(positions=[Position("NVDA", 10, 100), Position("PLTR", 10, 100)])
+    # make PLTR a recorded AI holding too
+    t += timedelta(minutes=10)
+    assert "AI names" in g.check(LB, lbuy("ANET", sector="Networking", ai=True), a, 100, t).reasons[0]
+    full = lacct(equity=100_000, cash=60_000, positions=[Position(s, 1, 100) for s in "ABCDE"])
+    assert "max positions" in g.check(LB, lbuy("ZZZ", sector="X9"), full, 100, t + timedelta(minutes=1)).reasons[0]
+
+
+def test_live_earnings_halves_position_cap(live):
+    cfg, j, g = live
+    d = g.check(LB, lbuy(stop=99, earnings_days=5), lacct(), 100, LATER)
+    assert d.qty == 8 and any("halved" in w for w in d.warnings)  # 8% of 10k @ $100
+
+
+def test_confirm_period_flags_orders_then_auto(live):
+    cfg, j, g = live
+    d = g.check(LB, lbuy(), lacct(), 100, NOW + timedelta(hours=1))
+    assert d.approved and d.needs_user_approval
+    d2 = g.check(LB, lbuy("AMD", sector="X"), lacct(), 100, LATER)
+    assert d2.approved and not d2.needs_user_approval
+
+
+def test_record_gate_requires_user_approval(live, tmp_path):
+    import json, sys
+    from trader.cli import main
+    cfg, j, g = live
+    conf = tmp_path / "c.toml"
+    conf.write_text(f'db_path = "{cfg.db_path}"\nallowed_account_id = "ACC1"\n'
+                    '[overrides.momentum-quality]\nconfirm_days = 2\n')
+    d = g.check(LB, lbuy(), lacct(), 100, datetime.now(timezone.utc))
+    base = ["--config", str(conf), "record", "--book", LB, "--symbol", "NVDA", "--side", "buy",
+            "--qty", "10", "--price", "100"]
+    assert main(base) == 3                                   # live fill needs decision id
+    assert main(base + ["--decision-id", str(d.id)]) == 3    # confirm period, not approved
+    assert main(["--config", str(conf), "approve", "--decision-id", str(d.id)]) == 0
+    assert main(base + ["--decision-id", str(d.id)]) == 0
+    assert len(j.fills(LB)) == 1

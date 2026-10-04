@@ -9,12 +9,18 @@ Robinhood is reached through MCP tools in the agent session. The engine (`trader
    (the indicator values and rules that fired). This is what the dashboard shows as the "why".
 4. **Paper strategies:** `trader paper-order --book <name> --symbol S --side buy --qty N --quote P --rationale "..." --signals '{...}'`
    then `trader paper-mark --book <name> S=P ...` to mark positions.
-5. **Live strategy:**
-   a. `trader snapshot --book <live>` with the real account JSON (`account_id`, `equity`, `cash`, `positions`).
-   b. `trader check --book <live>` with `{"proposal":{...},"account":{...},"quote":P}` on stdin.
-   c. Exit code 0 only: place the order for the **returned `qty`** with the Robinhood order tool
-      (limit orders preferred). Exit code 2 = rejected: do nothing, do not retry with a tweaked order.
-   d. After the broker confirms, `trader record --book <live> --symbol S --side buy --qty N --price P --decision-id ID --ref ORDER_ID`.
+5. **Live strategy (momentum-quality = your `robinhood-stock-trader` skill):**
+   a. Run the skill's Step 1-2 (portfolio, SPY/QQQ regime). Record it: `trader regime RISK-ON|RISK-OFF`.
+      RISK-OFF => no buys this run (exits still run).
+   b. `trader snapshot --book momentum-quality` with the real account JSON (`account_id` = the Agentic account number, `equity`, `cash`, `positions`).
+   c. For each exit/entry the skill produces, `trader check --book momentum-quality` with
+      `{"proposal":{symbol,side,qty,order_type:"limit",limit_price,stop_price,target_price,rationale,signals:{phases:{...},sector,is_ai,earnings_days}},"account":{...},"quote":P}`.
+      Exit code 2 = rejected: do nothing, do not retry with a tweaked order.
+   d. If the result has `needs_user_approval: true` (first 2 days): **stop and ask the user** with the full trade card
+      (what, why, phase evidence, stop/target, size). Only after an explicit yes: `trader approve --decision-id ID`.
+   e. Place the order for the returned `qty` with `review_equity_order` then `place_equity_order` (limit).
+   f. `trader record --book momentum-quality --symbol S --side buy --qty N --price P --decision-id ID --ref ORDER_ID`
+      (refuses if the decision was rejected or an unapproved confirm-period order).
 6. Never place an order that did not pass `check`. Never trade outside the allow-listed account.
 
 ## Human controls

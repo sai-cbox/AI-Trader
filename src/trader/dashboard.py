@@ -51,7 +51,11 @@ def book_summary(j: Journal, cfg: Config, book: str) -> dict:
 def overview(j: Journal, cfg: Config) -> dict:
     events = [dict(r) for r in j.db.execute(
         "SELECT * FROM events WHERE kind='warning' OR kind LIKE 'state:%' ORDER BY ts DESC LIMIT 20")]
+    pending = [dict(r) for r in j.db.execute(
+        "SELECT id,book,symbol,side,qty,quote FROM decisions WHERE approved=1 AND needs_approval=1 "
+        "AND user_approved_at IS NULL ORDER BY id DESC LIMIT 20")]
     return {"books": [book_summary(j, cfg, b) for b in cfg.books],
+            "pending_approvals": pending, "regime": j.get("market_regime"), "regime_ts": j.get("market_regime_ts"),
             "events": events, "stop_file": controls.kill_file_present(cfg.db_path)}
 
 
@@ -69,6 +73,8 @@ def book_detail(j: Journal, cfg: Config, book: str, limit: int = 100) -> dict:
             "requested_qty": r["req_qty"], "approved_qty": r["qty"], "approved": bool(r["approved"]),
             "risk_reasons": json.loads(r["reasons"] or "[]"), "risk_warnings": json.loads(r["warnings"] or "[]"),
             "rationale": r["rationale"], "signals": json.loads(r["signals"] or "{}"),
+            "stop_price": r["stop_price"], "target_price": r["target_price"],
+            "needs_approval": bool(r["needs_approval"]), "user_approved_at": r["user_approved_at"],
             "fills": fills_by_decision.get(r["id"], []),
         })
     positions = []

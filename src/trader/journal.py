@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS snapshots (ts TEXT, book TEXT, equity REAL, cash REAL
 CREATE TABLE IF NOT EXISTS decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, book TEXT, symbol TEXT, side TEXT,
   quote REAL, req_qty INTEGER, qty INTEGER, approved INTEGER,
-  reasons TEXT, warnings TEXT, rationale TEXT, signals TEXT);
+  reasons TEXT, warnings TEXT, rationale TEXT, signals TEXT,
+  stop_price REAL, target_price REAL, needs_approval INTEGER DEFAULT 0, user_approved_at TEXT);
 CREATE TABLE IF NOT EXISTS fills (
   ts TEXT, book TEXT, symbol TEXT, side TEXT, qty REAL, price REAL, ref TEXT,
   rationale TEXT, decision_id INTEGER);
@@ -54,14 +55,23 @@ class Journal:
                         ((now or utcnow()).isoformat(), book, equity, cash))
         self.db.commit()
 
-    def decision(self, book, p, quote, qty, approved, reasons, warnings, now=None) -> int:
+    def decision(self, book, p, quote, qty, approved, reasons, warnings, now=None, needs_approval=False) -> int:
         cur = self.db.execute(
-            "INSERT INTO decisions(ts,book,symbol,side,quote,req_qty,qty,approved,reasons,warnings,rationale,signals)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO decisions(ts,book,symbol,side,quote,req_qty,qty,approved,reasons,warnings,rationale,signals,stop_price,target_price,needs_approval)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ((now or utcnow()).isoformat(), book, p.symbol, p.side, quote, p.qty, qty, int(approved),
-             json.dumps(reasons), json.dumps(warnings), p.rationale, json.dumps(p.signals, default=str)))
+             json.dumps(reasons), json.dumps(warnings), p.rationale, json.dumps(p.signals, default=str),
+             p.stop_price, p.target_price, int(needs_approval)))
         self.db.commit()
         return cur.lastrowid
+
+    def get_decision(self, decision_id: int):
+        return self.db.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
+
+    def approve_decision(self, decision_id: int, now=None) -> None:
+        self.db.execute("UPDATE decisions SET user_approved_at=? WHERE id=?",
+                        ((now or utcnow()).isoformat(), decision_id))
+        self.db.commit()
 
     def fill(self, book, symbol, side, qty, price, ref="", rationale="", decision_id=None, now=None) -> None:
         self.db.execute("INSERT INTO fills VALUES(?,?,?,?,?,?,?,?,?)",

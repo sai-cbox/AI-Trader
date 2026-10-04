@@ -1,6 +1,7 @@
 """Deterministic risk guard. Every order must pass check(); the LLM cannot bypass it. One book per strategy."""
 from __future__ import annotations
 
+import json
 import math
 import re
 from datetime import datetime
@@ -50,8 +51,24 @@ class RiskGuard:
         now = now or utcnow()
         self.refresh(book, account, now)
         d = self._evaluate(book, p, account, quote, now)
-        d.id = self.j.decision(book, p, quote, d.qty, d.approved, d.reasons, d.warnings, now)
+        today = now.astimezone(ET).date()
+        if d.approved and controls.confirm_active(self.j, book, self.cfg.opt(book, "confirm_days", 0), today):
+            d.needs_user_approval = True
+            d.warnings.append("confirm period: ask the user, then `trader approve --decision-id`")
+        d.id = self.j.decision(book, p, quote, d.qty, d.approved, d.reasons, d.warnings, now,
+                               d.needs_user_approval)
         return d
+
+    def _held_meta(self, book: str, a: Account) -> list[dict]:
+        """Sector / AI flags of current holdings, from the latest approved buy decision of each symbol."""
+        out = []
+        for pos in a.positions:
+            row = self.j.db.execute(
+                "SELECT signals FROM decisions WHERE book=? AND symbol=? AND side='buy' AND approved=1 "
+                "ORDER BY id DESC LIMIT 1", (book, pos.symbol)).fetchone()
+            sig = json.loads(row["signals"]) if row else {}
+            out.append({"symbol": pos.symbol, "sector": sig.get("sector"), "is_ai": bool(sig.get("is_ai"))})
+        return out
 
     def _evaluate(self, book, p: Proposal, a: Account, quote: float, now: datetime) -> Decision:
         c, rej = self.cfg, []
@@ -81,6 +98,9 @@ class RiskGuard:
                 return reject("limit order needs limit_price")
             if abs(p.limit_price - quote) / quote * 100 > c.price_sanity_pct:
                 return reject(f"limit {p.limit_price} more than {c.price_sanity_pct}% from quote {quote}")
+
+        if c.opt(book, "limit_only", False) and p.order_type != "limit":
+            return reject("limit orders only for this strategy")
 
         if kind == "live":
             if not c.allowed_account_id:
@@ -125,14 +145,55 @@ class RiskGuard:
         if pnl <= -c.daily_loss_limit_pct:
             return reject(f"daily loss {pnl:.2f}% hit limit -{c.daily_loss_limit_pct}%")
 
+        # ---- strategy rules (per-book overrides; encode the strategy's hard rules)
+        if c.opt(book, "require_regime", False):
+            regime, rts = self.j.get("market_regime"), self.j.get("market_regime_ts")
+            fresh = bool(rts) and (now - datetime.fromisoformat(rts)).total_seconds() < 36 * 3600
+            if regime != "RISK-ON" or not fresh:
+                return reject(f"market regime is {regime if fresh else 'unset/stale'}; buys need fresh RISK-ON")
+        phases = p.signals.get("phases", {})
+        failing = [n for n in c.opt(book, "required_phases", []) or []
+                   if not (isinstance(phases.get(n), dict) and phases[n].get("pass") is True)]
+        if failing:
+            return reject("phases not passed/missing: " + ", ".join(failing))
+        held = self._held_meta(book, a)
+        if c.opt(book, "no_add", False) and pos:
+            return reject(f"already holding {p.symbol}; no averaging down / adding")
+        mp = c.opt(book, "max_positions")
+        if mp and not pos and len(a.positions) >= mp:
+            return reject(f"max positions ({mp}) reached")
+        if c.opt(book, "one_per_sector", False):
+            sector = p.signals.get("sector")
+            if not sector:
+                return reject("signals.sector required (one position per sector)")
+            if any(h["sector"] == sector for h in held):
+                return reject(f"sector {sector} already held")
+        mai = c.opt(book, "max_ai_names")
+        if mai is not None and p.signals.get("is_ai") and sum(h["is_ai"] for h in held) >= mai:
+            return reject(f"max AI names ({mai}) reached")
+
+        warn = []
+        pos_cap = c.opt(book, "max_position_pct", c.max_position_pct)
+        ed = p.signals.get("earnings_days")
+        if ed is not None and float(ed) <= 10:
+            pos_cap /= 2
+            warn.append(f"earnings in {ed} days: position cap halved to {pos_cap:.1f}%")
         held_value = (pos.qty * quote) if pos else 0.0
-        room_pos = c.max_position_pct / 100 * a.equity - held_value
-        room_inv = c.max_invested_pct / 100 * a.equity - a.invested
+        room_pos = pos_cap / 100 * a.equity - held_value
+        room_inv = c.opt(book, "max_invested_pct", c.max_invested_pct) / 100 * a.equity - a.invested
         allowed = math.floor(min(room_pos, room_inv, a.cash) / price) if price else 0
+        rpt = c.opt(book, "risk_per_trade_pct")
+        if c.opt(book, "require_stop", False) or (rpt and p.stop_price):
+            if p.stop_price is None or not (0 < p.stop_price < price):
+                return reject("valid stop_price below entry price required")
+            if rpt:
+                risk_qty = math.floor(rpt / 100 * a.equity / (price - p.stop_price))
+                if risk_qty < allowed:
+                    warn.append(f"qty limited to {risk_qty} by {rpt}% risk-per-trade at stop {p.stop_price}")
+                allowed = min(allowed, risk_qty)
         qty = min(p.qty, allowed)
         if qty <= 0:
-            return reject("no room: position cap, invested cap or cash exhausted")
-        warn = []
-        if qty < p.qty:
+            return reject("no room: position cap, invested cap, risk-per-trade or cash exhausted")
+        if qty < p.qty and not any(w.startswith("qty") for w in warn):
             warn.append(f"qty reduced {p.qty}->{qty} by position/invested/cash limits")
         return Decision(True, qty, [], warn)

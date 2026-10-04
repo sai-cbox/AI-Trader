@@ -43,6 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("status"); book_arg(s, default="all")
     s = sub.add_parser("check", help="risk-check an order (JSON on stdin). REQUIRED before every live order")
     book_arg(s, required=True)
+    s = sub.add_parser("regime", help="record today's market regime (Phase 1). Live buys require fresh RISK-ON")
+    s.add_argument("value", choices=("RISK-ON", "RISK-OFF")); s.add_argument("--note", default="")
+    s = sub.add_parser("approve", help="record YOUR approval of a pending live order (confirm period)")
+    s.add_argument("--decision-id", type=int, required=True)
     s = sub.add_parser("snapshot", help="record account equity (JSON account on stdin); feeds the dashboard")
     book_arg(s, required=True)
     s = sub.add_parser("record", help="record a real fill after the broker executes it")
@@ -103,10 +107,29 @@ def main(argv: list[str] | None = None) -> int:
                         float(req["quote"]), now)
         out(d.to_dict())
         return 0 if d.approved else 2
+    elif a.cmd == "regime":
+        j.set("market_regime", a.value); j.set("market_regime_ts", now.isoformat())
+        j.event("all", "regime", f"{a.value} {a.note}".strip(), now)
+        out({"market_regime": a.value})
+    elif a.cmd == "approve":
+        row = j.get_decision(a.decision_id)
+        if not row or not row["approved"]:
+            print("decision not found or was rejected by the risk guard", file=sys.stderr); return 3
+        j.approve_decision(a.decision_id, now)
+        out({"decision_id": a.decision_id, "user_approved": True, "symbol": row["symbol"], "side": row["side"],
+             "qty": row["qty"]})
     elif a.cmd == "snapshot":
         guard.refresh(a.book, Account.from_dict(json.load(sys.stdin)), now)
         out({"recorded": True, "state": controls.get_state(j, a.book)})
     elif a.cmd == "record":
+        if cfg.kind(a.book) == "live" and a.decision_id is None:
+            print("live fills must reference the risk-checked --decision-id", file=sys.stderr); return 3
+        if a.decision_id is not None:
+            row = j.get_decision(a.decision_id)
+            if not row or not row["approved"] or row["book"] != a.book:
+                print("decision not found / rejected / other strategy", file=sys.stderr); return 3
+            if row["needs_approval"] and not row["user_approved_at"]:
+                print("confirm period: this order was never approved by the user", file=sys.stderr); return 3
         j.fill(a.book, a.symbol.upper(), a.side, a.qty, a.price, a.ref, a.rationale, a.decision_id, now)
         j.db.commit()
         out({"recorded": True})

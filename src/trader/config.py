@@ -30,6 +30,8 @@ class Config:
     symbol_denylist: tuple[str, ...] = ()
     db_path: str = "data/trader.db"
     strategies: dict = field(default_factory=lambda: dict(DEFAULT_STRATEGIES))
+    # per-strategy rule overrides, e.g. {"momentum-quality": {"max_position_pct": 16.0, ...}}
+    overrides: dict = field(default_factory=dict)
 
     def __post_init__(self):
         bad = {k: v for k, v in self.strategies.items() if v not in ("live", "paper")}
@@ -37,6 +39,13 @@ class Config:
             raise ValueError(f"strategy kind must be 'live' or 'paper': {bad}")
         if sum(v == "live" for v in self.strategies.values()) > 1:
             raise ValueError("at most one strategy may be live")
+
+    def opt(self, book: str, key: str, default=None):
+        """Per-strategy override, falling back to the global value of the same name, then `default`."""
+        ov = self.overrides.get(book, {})
+        if key in ov:
+            return ov[key]
+        return getattr(self, key, default)
 
     def kind(self, book: str) -> str | None:
         return self.strategies.get(book)

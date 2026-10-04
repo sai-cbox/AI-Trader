@@ -80,15 +80,23 @@ function board(books){
   document.querySelectorAll("[data-stop]").forEach(b=>b.onclick=()=>control("stop",b.dataset.stop));
   document.querySelectorAll("[data-pause]").forEach(b=>b.onclick=()=>control("pause",b.dataset.pause));
 }
+const PHASE_NAMES={market:"1 · Market direction (O'Neil M)",fundamentals:"2 · Fundamentals (CAN SLIM)",trend_template:"3 · Trend template (Minervini)",extension:"3b · 21 EMA extension (MARS)",stage2:"4 · Stage 2 (Weinstein)",momentum:"5 · Momentum / entry trigger"};
+function phases(sig){
+  const ph=sig.phases; if(!ph)return"";
+  return `<h4>Alignment with your strategy — phase checklist</h4><div class="scroll"><table style="font-size:13px"><tr><th>Phase</th><th>Result</th><th style="text-align:left">Evidence vs rule</th></tr>`+
+   Object.entries(ph).map(([k,v])=>`<tr><td style="text-align:left">${esc(PHASE_NAMES[k]||k)}</td><td>${v.pass?'<span class="up">✔ pass</span>':'<span class="down">✘ fail</span>'}</td><td style="text-align:left;white-space:normal">${esc(v.evidence||v.detail||"")}</td></tr>`).join("")+`</table></div>`;
+}
 function why(d){
-  const sig=Object.entries(d.signals||{});
+  const sig=Object.entries(d.signals||{}).filter(([k])=>k!=="phases");
   const risk=d.approved?(d.risk_warnings.length?d.risk_warnings:["All risk checks passed"]):d.risk_reasons;
   return `<div class="body"><h4>Why the agent proposed it</h4><div>${esc(d.rationale)||'<span class="mute">No rationale recorded.</span>'}</div>
-  ${sig.length?`<h4>Signals / rules that fired</h4><div class="kv">${sig.map(([k,v])=>`<span>${esc(k)}</span><span>${esc(typeof v==="object"?JSON.stringify(v):v)}</span>`).join("")}</div>`:""}
+  ${phases(d.signals||{})}
+  ${d.stop_price||d.target_price?`<h4>Trade plan</h4><div class="kv"><span>Stop</span><span>${usd2(d.stop_price)}</span><span>Target</span><span>${usd2(d.target_price)}</span></div>`:""}
+  ${sig.length?`<h4>Other signals</h4><div class="kv">${sig.map(([k,v])=>`<span>${esc(k)}</span><span>${esc(typeof v==="object"?JSON.stringify(v):v)}</span>`).join("")}</div>`:""}
   <h4>Risk guard verdict — ${d.approved?'<span class="up">approved</span>':'<span class="down">rejected</span>'}</h4>
   <div>${risk.map(r=>"• "+esc(r)).join("<br>")}</div>
   <h4>Order</h4><div class="kv"><span>Quote</span><span>${usd2(d.quote)}</span><span>Requested qty</span><span>${d.requested_qty}</span><span>Approved qty</span><span>${d.approved_qty}</span>
-  <span>Fills</span><span>${d.fills.length?d.fills.map(f=>`${f.qty} @ ${usd2(f.price)}`).join(", "):'<span class="mute">none recorded</span>'}</span></div></div>`;
+  <span>Your approval</span><span>${d.needs_approval?(d.user_approved_at?"approved "+esc(d.user_approved_at.slice(0,16).replace("T"," ")):'<b class="down">pending</b>'):"not required"}</span><span>Fills</span><span>${d.fills.length?d.fills.map(f=>`${f.qty} @ ${usd2(f.price)}`).join(", "):'<span class="mute">none recorded</span>'}</span></div></div>`;
 }
 function detail(d){
   const s=d.summary,r=d.report;
@@ -104,9 +112,10 @@ function detail(d){
 }
 async function refresh(){
   const o=await api("/api/overview"); const books=o.books; if(!selected&&books.length)selected=(books.find(b=>b.approved+b.rejected>0)||books[0]).book;
-  const live=books.find(b=>b.kind==="live"); $("sub").textContent=live?`· live: ${live.book}`:"";
+  const live=books.find(b=>b.kind==="live"); $("sub").textContent=(live?`· live: ${live.book}`:"")+(o.regime?` · market: ${o.regime}`:"");
   $("upd").textContent=SNAP?"snapshot":"updated "+new Date().toLocaleTimeString()+"  "; if(SNAP){$("pauseAll").style.display=$("stopAll").style.display="none";}
-  const bn=[]; if(o.stop_file)bn.push("STOP file present — all new orders are blocked.");
+  const bn=[]; (o.pending_approvals||[]).forEach(d=>bn.push(`Awaiting your approval: ${d.side.toUpperCase()} ${d.qty} ${d.symbol} @ ~$${d.quote} (${d.book}, decision #${d.id}) — reply in chat to approve.`));
+  if(o.stop_file)bn.push("STOP file present — all new orders are blocked.");
   books.filter(b=>b.state==="paused"&&b.reason).forEach(b=>bn.push(`${b.book} paused: ${b.reason}`));
   $("banners").innerHTML=bn.map(t=>`<div class="banner">${esc(t)}</div>`).join("");
   board(books); chart(books);
