@@ -29,6 +29,14 @@ class Config:
     window_trading_days: int = 30
     symbol_denylist: tuple[str, ...] = ()
     db_path: str = "data/trader.db"
+    scan_id: str = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # saved Robinhood scan used by the momentum-quality skill
+    max_candidates: int = 20
+    analyst_model: str = "claude-opus-5-5"
+    analyst_effort: str = "high"
+    analyst_max_proposals: int = 3
+    analyst_daily_cap_usd: float = 5.0
+    analyst_price_in_per_mtok: float = 4.0
+    analyst_price_out_per_mtok: float = 20.0
     strategies: dict = field(default_factory=lambda: dict(DEFAULT_STRATEGIES))
     # per-strategy rule overrides, e.g. {"momentum-quality": {"max_position_pct": 16.0, ...}}
     overrides: dict = field(default_factory=dict)

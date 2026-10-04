@@ -70,6 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--token-file", default=None)
     s = sub.add_parser("probe", help="PHASE 1a: read-only probe; prints the SHAPE of Robinhood replies (no amounts)")
     s.add_argument("--url"); s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
+    s = sub.add_parser("set-key", help="store your Anthropic API key privately (hidden input; file readable only by you)")
+    s = sub.add_parser("data-check", help="PHASE 1b: fetch market data + compute facts (no Claude, no orders)")
+    s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
+    s = sub.add_parser("run", help="PHASE 1c: data -> analyst -> guard -> journal. DRY-RUN ONLY: no order code exists yet")
+    s.add_argument("--port", type=int, default=8765); s.add_argument("--token-file", default=None)
+    s.add_argument("--no-analyst", action="store_true", help="stop after the data step")
     s = sub.add_parser("dashboard", help="serve the monitoring dashboard or export a static snapshot")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--export", metavar="FILE.html")
 
@@ -166,6 +172,18 @@ def main(argv: list[str] | None = None) -> int:
         import asyncio
         from .robinhood.probe import run_probe
         return asyncio.run(run_probe(cfg, a.url, a.port, a.token_file))
+    elif a.cmd == "set-key":
+        import getpass
+        from .analyst import save_api_key, KEY_FILE
+        key = getpass.getpass("Paste your Anthropic API key (input hidden): ").strip()
+        if not key.startswith("sk-ant-"):
+            print("That does not look like an Anthropic key (should start with sk-ant-). Nothing saved."); return 1
+        save_api_key(key); print(f"Saved to {KEY_FILE} (readable only by you). It is never printed or logged.")
+    elif a.cmd in ("data-check", "run"):
+        import asyncio
+        from .pipeline import run_pipeline
+        return asyncio.run(run_pipeline(cfg, j, with_analyst=(a.cmd == "run" and not a.no_analyst),
+                                        port=a.port, token_file=a.token_file))
     elif a.cmd == "dashboard":
         from . import dashboard
         if a.export:

@@ -14,6 +14,14 @@ slippage_bps = 5.0             # paper fills
 window_trading_days = 30       # evaluation window
 symbol_denylist = []
 db_path = "data/trader.db"
+scan_id = "ca8f132f-c07b-473f-9456-31e09b1e0d46"   # your saved Robinhood scan (Russell 3000 quality momentum)
+max_candidates = 20
+analyst_model = "claude-opus-5-5"
+analyst_effort = "high"
+analyst_max_proposals = 3
+analyst_daily_cap_usd = 5.0                        # script refuses to call Claude past this per day
+analyst_price_in_per_mtok = 4.0                    # for the cost estimate only
+analyst_price_out_per_mtok = 20.0
 
 # Exactly one strategy may be "live" (real money, whole Agentic account).
 # All others are "paper" (simulated, own account each).

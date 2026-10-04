@@ -6,8 +6,8 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest"]
-exec = ["mcp>=1.2,<2"]
+dev = ["pytest", "jsonschema"]
+exec = ["mcp>=1.2,<2", "anthropic>=0.60"]
 
 [project.scripts]
 trader = "trader.cli:main"

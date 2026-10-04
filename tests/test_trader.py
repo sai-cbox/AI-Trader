@@ -426,3 +426,159 @@ def test_probe_outline_hides_values_and_extra_allowed_is_explicit():
     for bad in ("place_equity_order", "create_scan", "update_scan_filters", "cancel_equity_order"):
         with pytest.raises(WriteBlocked):
             asyncio.run(rh.call(bad))
+
+
+# ---------------- strategy facts (momentum-quality) ----------------
+def _bars(closes, vols=None, spread=1.0):
+    vols = vols or [1000] * len(closes)
+    return [{"close": c, "high": c + spread, "low": c - spread, "volume": v} for c, v in zip(closes, vols)]
+
+
+def test_extension_labels_and_macd():
+    from trader.strategy.momentum import extension, macd_state
+    assert extension(99, 100, 2)[1] == "BELOW_21EMA"
+    assert extension(100.5, 100, 2)[1] == "CLEAN"
+    assert extension(102, 100, 2)[1] == "ACCEPTABLE"      # +1.0 ATR
+    assert extension(103.5, 100, 2)[1] == "LATE"          # +1.75
+    assert extension(105, 100, 2)[1] == "TAKE_PROFITS"    # +2.5
+    assert macd_state([0.2, 0.5]) == "POSITIVE_RISING" and macd_state([-0.1, -0.3]) == "NEGATIVE_FALLING"
+
+
+def test_trend_template_requires_all_seven():
+    from trader.strategy.momentum import trend_template
+    ok = trend_template(100, 95, 90, 80, 78, 105, 60)
+    assert ok["pass"] and ok["pct_below_52w_high"] == 4.8
+    for bad in (dict(sma50=101), dict(sma200_month_ago=81), dict(high52=140), dict(low52=90)):
+        args = dict(price=100, sma50=95, sma150=90, sma200=80, sma200_month_ago=78, high52=105, low52=60) | bad
+        assert not trend_template(**args)["pass"], bad
+
+
+def test_regime_and_distribution_days():
+    from trader.strategy.momentum import regime, distribution_days, new_4w_low_recent
+    good = dict(price=612, sma50=598, sma200=560, ema50=600, ema100=590, dist_days=2, new_low_5d=False)
+    assert regime(good, good).state == "RISK-ON"
+    for bad in (dict(price=550), dict(dist_days=4), dict(new_low_5d=True), dict(ema50=585)):
+        r = regime(good | bad, good)
+        assert r.state == "RISK-OFF" and r.reasons
+    closes = [100] * 10 + [99, 98, 97, 96]                  # 4 down days
+    vols = [1000] * 10 + [1100, 1200, 1300, 1400]            # each on higher volume
+    assert distribution_days(_bars(closes, vols)) == 4
+    flat = _bars([100.0] * 25)
+    assert new_4w_low_recent(flat) is False
+    dip = _bars([100.0] * 20 + [90.0] * 5)
+    assert new_4w_low_recent(dip) is True
+
+
+# ---------------- Phase 1: market parsing, analyst facts check, pipeline ----------------
+def test_market_parsers_and_shape_errors():
+    from trader.robinhood import market as mk
+    q = {"data": {"results": [{"quote": {"symbol": "SPY", "last_trade_price": "600.5", "bid_price": "600.4",
+                                          "ask_price": "600.6", "previous_close": "599"}}]}}
+    assert mk.parse_quotes(q)["SPY"]["ask"] == 600.6
+    ind = {"data": {"indicators": [{"series": [{"time": "2026-10-01T00:00:00Z", "value": "10"},
+                                               {"time": "2026-10-02T00:00:00Z", "value": "12"}]}]}}
+    assert mk.latest_value(ind) == 12.0
+    rev = {"data": {"indicators": [{"series": [{"time": "2026-10-02T00:00:00Z", "value": "12"},
+                                               {"time": "2026-10-01T00:00:00Z", "value": "10"}]}]}}
+    assert mk.latest_value(rev) == 12.0                       # newest-first input is re-ordered
+    macd = {"data": {"indicators": [{"series": [{"time": "t1", "macd": 1, "signal": 0.5, "histogram": 0.5}]}]}}
+    assert mk.latest_value(macd, "hist") == 0.5
+    bars = {"data": {"results": [{"symbol": "X", "bars": [{"begins_at": "2026-10-01", "close_price": "10", "high_price": "11",
+                                                          "low_price": "9", "volume": "100"}]}]}}
+    assert mk.parse_bars(bars, "X")[0]["close"] == 10.0
+    with pytest.raises(mk.ShapeError) as e:
+        mk.parse_bars({"data": {"results": [{"symbol": "X", "bars": [{"weird_close": 1, "h": 1, "l": 1, "v": 1}]}]}}, "X")
+    assert "found keys" in str(e.value) and "weird_close" in str(e.value)    # self-diagnosing
+    assert mk.parse_earnings({"data": {"results": [{"symbol": "A", "report": {"date": "2026-10-20"}},
+                                                    {"symbol": "A", "report": {"date": "2026-10-10"}}]}}) == {"A": "2026-10-10"}
+
+
+def _ctx(label="CLEAN", macd="POSITIVE_RISING", tt_pass=True, regime="RISK-ON", ask=100.0, shares=3):
+    tt = {"checks": {"sma200_rising": True}, "pass": tt_pass, "pct_below_52w_high": 5.0, "pct_above_52w_low": 80.0}
+    cand = {"symbol": "VRT", "price": ask, "ask": ask, "trend_template": tt, "extension_atr": 0.4, "extension_label": label,
+            "macd": macd, "rsi14": 60, "volume_vs_avg30": 1.6, "rs_vs_spy_30d": 12.0, "shares_at_position_size": shares,
+            "sector": "AI Infrastructure"}
+    return {"asof": "x", "account_number": "ACC1",
+            "account": {"equity": 2000.0, "cash": 1500.0, "buying_power": 1500.0, "position_size": 320.0, "positions": []},
+            "regime": {"state": regime, "reasons": ["r"], "qqq_distribution": False, "facts": {}},
+            "funnel": {"scan_matches": 1, "affordable": 1, "after_earnings_filter": 1, "finalists": 1},
+            "candidates": [cand], "holdings": [], "candidate_errors": []}
+
+
+def _decision(qty=3, limit=100.10, passed=True):
+    from trader.analyst import DecisionOut, PhaseOut, PHASES
+    return DecisionOut(symbol="VRT", action="buy", qty=qty, limit_price=limit, stop_price=94.0, target_price=118.0,
+                       rationale="breakout", sector="AI Infrastructure", is_ai=True, setup="box", earnings_days=999,
+                       exit_rule="", phases={k: PhaseOut(passed=passed, evidence="e") for k in PHASES})
+
+
+def test_verify_against_facts_overrides_model_claims():
+    from trader.analyst import verify_against_facts
+    ok, problems, phases = verify_against_facts(_decision(), _ctx())
+    assert ok and phases["trend_template"]["pass"] and "CLEAN" in phases["extension"]["evidence"]
+    for kwargs in (dict(label="LATE"), dict(macd="NEGATIVE_FALLING"), dict(tt_pass=False), dict(regime="RISK-OFF")):
+        ok, problems, _ = verify_against_facts(_decision(), _ctx(**kwargs))   # model says passed=True; code says no
+        assert not ok and problems, kwargs
+    ok, problems, _ = verify_against_facts(_decision(qty=9), _ctx())
+    assert not ok and "exceeds" in problems[0]
+    ok, problems, _ = verify_against_facts(_decision(limit=103.0), _ctx())
+    assert not ok and "ask" in problems[0]
+
+
+def test_pipeline_dry_run_journals_and_never_orders(tmp_path):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from trader.analyst import DecisionSet
+    from trader.pipeline import run_pipeline
+    cfg = Config(db_path=str(tmp_path / "p.db"), allowed_account_id="ACC1", overrides=OV | {"momentum-quality": OV["momentum-quality"] | {"confirm_days": 0}})
+    j = Journal(cfg.db_path)
+    now = datetime(2026, 10, 6, 14, 0, tzinfo=timezone.utc)
+    controls.start(j, LB, 30, now.date())
+    lines = []
+
+    @asynccontextmanager
+    async def fake_connect(*a, **k):
+        yield object()
+
+    async def fake_build(rh, cfg, book, log, now):
+        return _ctx()
+
+    good, bad = _decision(), _decision(limit=105.0)
+    out = asyncio.run(run_pipeline(cfg, j, True, connect=fake_connect, build=fake_build, log=lines.append, now=now,
+                                   analyst_fn=lambda c, x: (DecisionSet(summary="s", decisions=[good, bad]),
+                                                            {"input_tokens": 1000, "output_tokens": 500, "cost_usd": 0.014})))
+    text = "\n".join(lines)
+    assert out == 0 and "WOULD PLACE (dry run): BUY 3 VRT" in text and "REJECTED by fact check" in text
+    assert "Nothing was sent to Robinhood" in text
+    rows = j.db.execute("SELECT approved FROM decisions WHERE book=?", (LB,)).fetchall()
+    assert sorted(r["approved"] for r in rows) == [0, 1]
+    assert j.get("market_regime") == "RISK-ON"
+    # daily cost cap blocks a second call
+    cfg2 = Config(**{**cfg.__dict__, "analyst_daily_cap_usd": 0.01})
+    lines.clear()
+    assert asyncio.run(run_pipeline(cfg2, j, True, connect=fake_connect, build=fake_build, log=lines.append, now=now,
+                                    analyst_fn=lambda c, x: (_ for _ in ()).throw(AssertionError("must not call")))) == 1
+    assert "daily cap" in "\n".join(lines)
+
+
+def test_api_key_storage_private(tmp_path, monkeypatch):
+    import os, stat
+    from trader import analyst
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    kf = tmp_path / "k" / "key"
+    analyst.save_api_key("sk-ant-test123", kf)
+    assert stat.S_IMODE(os.stat(kf).st_mode) == 0o600
+    monkeypatch.setattr(analyst, "KEY_FILE", kf)
+    assert analyst.load_api_key() == "sk-ant-test123"
+    monkeypatch.setattr(analyst, "KEY_FILE", tmp_path / "missing")
+    with pytest.raises(analyst.AnalystError):
+        analyst.load_api_key()
+
+
+def test_analyst_schema_is_valid_json_schema():
+    import jsonschema
+    from trader.analyst import SCHEMA, DecisionSet
+    ds = DecisionSet(summary="s", decisions=[_decision()])
+    jsonschema.Draft202012Validator.check_schema(SCHEMA)
+    payload = ds.model_dump(); payload["decisions"][0]["phases"] = {k: v for k, v in payload["decisions"][0]["phases"].items()}
+    jsonschema.validate(payload, SCHEMA)
