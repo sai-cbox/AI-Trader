@@ -850,3 +850,15 @@ def test_alerts_off_without_topic_and_never_raise():
     assert sent == ["https://ntfy.sh/abc"]
     def boom(req, timeout): raise OSError("down")
     assert notify(Config(ntfy_topic="abc"), "t", "m", opener=boom) is False
+
+
+def test_partial_day_bar_is_dropped_only_while_the_session_is_open():
+    from trader.robinhood.market import drop_partial
+    bars = [{"t": "2026-10-05", "close": 1}, {"t": "2026-10-06", "close": 2}]            # Mon, Tue
+    mid = datetime(2026, 10, 6, 17, 0, tzinfo=timezone.utc)                                  # Tue 1:00 PM ET, market open
+    assert drop_partial(bars, mid) == bars[:1]
+    after = datetime(2026, 10, 6, 21, 0, tzinfo=timezone.utc)                                # Tue 5:00 PM ET, closed
+    assert drop_partial(bars, after) == bars
+    sat = datetime(2026, 10, 10, 17, 0, tzinfo=timezone.utc)
+    assert drop_partial([{"t": "2026-10-09", "close": 1}], sat) == [{"t": "2026-10-09", "close": 1}]   # weekend: last bar is Friday's
+    assert drop_partial([{"t": "2026-10-05", "close": 1}], mid) == [{"t": "2026-10-05", "close": 1}]   # last bar is yesterday: keep

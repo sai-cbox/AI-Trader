@@ -18,7 +18,7 @@ from .reporting import open_positions
 from .risk import ET, RiskGuard
 from .robinhood.authcheck import leaf_errors
 from .robinhood.client import SERVER_URL, connect_read_only
-from .robinhood.market import Fetcher, parse_bars, parse_earnings, parse_earnings_detail, parse_scan
+from .robinhood.market import Fetcher, drop_partial, parse_bars, parse_earnings, parse_earnings_detail, parse_scan
 from .strategy.paper_rules import STRATEGIES, TREND_UNIVERSE, Ctx
 
 
@@ -112,7 +112,7 @@ async def paper_run(cfg: Config, j: Journal, port: int = 8765, token_file=None, 
                     p = await f.call("get_equity_historicals", {"symbols": chunk, "start_time": f.start400, "interval": "day"})
                     for s in chunk:
                         try:
-                            bars[s] = parse_bars(p, s)
+                            bars[s] = drop_partial(parse_bars(p, s), now)
                         except Exception:
                             pass
                 except Exception as e:
@@ -125,6 +125,8 @@ async def paper_run(cfg: Config, j: Journal, port: int = 8765, token_file=None, 
         log("\nRESULT: PAPER RUN FAILED. Nothing was changed.")
         notify(cfg, "AI-Trader: paper run FAILED", "Data step failed; no paper trades were made.", "high")
         return 1
+    if bars and now.astimezone(ET).weekday() < 5 and (now.astimezone(ET).hour, now.astimezone(ET).minute) < (16, 15):
+        log("[data] note: US market is still open, so today's unfinished bar was ignored (decisions use the last completed session)")
     data = {"bars": bars, "scan_symbols": [s for s in scan if s in bars], "earn_days": earn_days, "earn_detail": detail}
     summary = run_books(cfg, j, now, data, log, only)
     parts = [f"{b}: {v['entries']} buy/{v['exits']} sell, equity {v['equity']:,.0f}" for b, v in summary.items()]

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..config import Config
 from ..strategy import momentum as m
@@ -14,6 +15,17 @@ from .client import agentic_accounts
 
 ACTIONABLE = ("BELOW_21EMA", "CLEAN", "ACCEPTABLE")
 TIME_NAMES = {"time", "timestamp", "date", "begins_at", "ts", "t", "start", "end"}
+
+
+ET = ZoneInfo("America/New_York")
+
+
+def drop_partial(bars: list[dict], now: datetime) -> list[dict]:
+    """Remove today's still-forming daily bar (before 4:15 PM ET on a weekday) so indicators only see completed sessions."""
+    et = now.astimezone(ET)
+    if bars and bars[-1].get("t") == et.date().isoformat() and et.weekday() < 5 and (et.hour, et.minute) < (16, 15):
+        return bars[:-1]
+    return bars
 
 
 class ShapeError(RuntimeError):
@@ -179,7 +191,7 @@ class Fetcher:
 
     async def bars(self, symbols: list[str]) -> dict[str, list[dict]]:
         p = await self.call("get_equity_historicals", {"symbols": symbols, "start_time": self.start120, "interval": "day"})
-        return {s: parse_bars(p, s) for s in symbols}
+        return {s: drop_partial(parse_bars(p, s), self.now) for s in symbols}
 
 
 async def index_facts(f: Fetcher, sym: str, price: float) -> dict:
