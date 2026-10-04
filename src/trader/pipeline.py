@@ -54,7 +54,9 @@ def print_context(ctx: dict, log=print) -> None:
         for h in ctx["holdings"]:
             log(f"  {h['symbol']}: " + (h["error"] if "error" in h else
                 f"qty {h['qty']}, pnl {h['pnl_pct']}%, price vs 50d {'above' if h['price'] > h['sma50'] else 'BELOW'}, "
-                f"macd {h['macd']}, ext {h['extension_label']}"))
+                f"macd {h['macd']}, ext {h['extension_label']}"
+                + "".join(f"\n      MUST SELL: {x}" for x in h["exit_flags"]["must_sell"])
+                + "".join(f"\n      note: {x}" for x in h["exit_flags"]["tighten"] + h["exit_flags"]["partial"])))
 
 
 async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 8765, token_file=None, *,
@@ -121,7 +123,23 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
                 + f"\n    why: {d.rationale}" + ("".join(f"\n    note: {w}" for w in dec.warnings)))
         else:
             log(f"\n  REJECTED by guard: {d.action.upper()} {d.qty} {d.symbol}: " + "; ".join(dec.reasons))
-    if not ds.decisions:
+    proposed_sells = {d.symbol for d in ds.decisions if d.action == "sell"}
+    for h in ctx["holdings"]:
+        flags = (h.get("exit_flags") or {}).get("must_sell") or []
+        if "error" in h or not flags or h["symbol"] in proposed_sells:
+            continue
+        qty = int(h["qty"])
+        px = round((h.get("bid") or h["price"]) - 0.05, 2)
+        rule = "; ".join(flags)
+        p = Proposal(h["symbol"], "sell", qty, "limit", px, f"Mandatory exit (code rule, analyst did not propose it): {rule}",
+                     signals={"exit_rule": rule, "forced_by": "code"})
+        dec = guard.check(book, p, acct, price_of.get(h["symbol"]) or px, now)
+        if dec.approved:
+            would += 1
+            log(f"\n  FORCED EXIT by code (dry run): SELL {dec.qty} {h['symbol']} limit {px}\n    rule: {rule}")
+        else:
+            log(f"\n  FORCED EXIT blocked by guard: {h['symbol']}: " + "; ".join(dec.reasons))
+    if not ds.decisions and not would:
         log("\n  No trades proposed (cash is a valid position).")
     log(f"\nRESULT: DRY RUN complete. {would} order(s) would be placed. Nothing was sent to Robinhood.")
     return 0

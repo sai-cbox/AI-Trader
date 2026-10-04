@@ -107,6 +107,33 @@ def regime(spy: dict, qqq: dict) -> RegimeResult:
                         qqq_distribution=qqq.get("dist_days", 0) >= 4, facts={"SPY": spy, "QQQ": qqq})
 
 
+def stop_pct_for(risk_per_trade_pct: float, position_pct: float) -> float:
+    """Skill: stop_pct = risk_per_trade / position_size (1% / 16% = 6.25%)."""
+    return round(risk_per_trade_pct / position_pct * 100, 2)
+
+
+def exit_flags(price: float, avg_cost: float | None, sma50: float, macd: str, ext_label: str, stop_pct: float,
+               earnings_days: int | None) -> dict:
+    """Skill Phase 7. `must_sell` rules are mandatory and enforced by code even if the analyst misses them."""
+    must, tighten, partial = [], [], []
+    pnl = (price / avg_cost - 1) * 100 if avg_cost else None
+    if avg_cost and price <= avg_cost * (1 - stop_pct / 100):
+        must.append(f"HARD_STOP: price {price:.2f} <= {avg_cost * (1 - stop_pct / 100):.2f} (-{stop_pct}% from cost {avg_cost:.2f})")
+    if price < sma50:
+        must.append(f"BELOW_50D_MA: price {price:.2f} < 50d {sma50:.2f}")
+    if earnings_days is not None and earnings_days <= 2:
+        must.append(f"EARNINGS_IMMINENT: reports in {earnings_days} day(s); skill forbids holding through earnings")
+    if macd == "NEGATIVE_FALLING":
+        tighten.append("MACD NEGATIVE_FALLING: tighten stop to breakeven")
+    if pnl is not None and pnl >= 25:
+        partial.append(f"TARGET_25: up {pnl:.1f}% (sell all)")
+    elif pnl is not None and pnl >= 15:
+        partial.append(f"TARGET_15: up {pnl:.1f}% (sell half if 2+ shares)")
+    if ext_label == "TAKE_PROFITS":
+        partial.append("TAKE_PROFITS_ZONE: more than 2 ATR above the 21 EMA, consider a partial exit")
+    return {"must_sell": must, "tighten": tighten, "partial": partial, "pnl_pct": round(pnl, 2) if pnl is not None else None}
+
+
 def shares_for(position_size: float, ask: float) -> int:
     """Skill: shares = floor(position_size / ask); skip when 0."""
     return int(position_size // ask) if ask > 0 else 0

@@ -211,6 +211,7 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
     equity = pf["total"]
     pos_pct = cfg.opt(book, "max_position_pct", cfg.max_position_pct)
     position_size = equity * pos_pct / 100
+    stop_pct = m.stop_pct_for(cfg.opt(book, "risk_per_trade_pct", 1.0) or 1.0, pos_pct)
     log(f"[data] account ok; {len(positions)} open position(s); position size = {pos_pct}% of equity")
 
     quotes = parse_quotes(await f.call("get_equity_quotes", {"symbols": ["SPY", "QQQ"]}))
@@ -306,12 +307,13 @@ async def build_context(rh, cfg: Config, book: str = "momentum-quality", log=pri
             fd = parse_fundamentals(await f.call("get_equity_fundamentals", {"symbols": [s]}))[s]
             h = await symbol_facts(f, s, q["last"], fd, spy_ret)
             h.update({"qty": pos["qty"], "avg_cost": pos["avg"], "pnl_pct": round((q["last"] / pos["avg"] - 1) * 100, 2) if pos["avg"] else None,
-                      "bid": q["bid"]})
+                      "bid": q["bid"], "earnings_in_days": days_to(s)})
+            h["exit_flags"] = m.exit_flags(q["last"], pos["avg"], h["sma50"], h["macd"], h["extension_label"], stop_pct, days_to(s))
             holdings.append(h)
         except Exception as e:
             holdings.append({"symbol": s, "qty": pos["qty"], "error": f"{type(e).__name__}: {str(e)[:160]}"})
     return {"asof": _iso(now), "account_number": acct_no,
             "account": {"equity": equity, "cash": pf["cash"], "buying_power": pf["buying_power"], "position_size": position_size,
-                        "positions": positions},
+                        "stop_pct": stop_pct, "positions": positions},
             "regime": {"state": reg.state, "reasons": reg.reasons, "qqq_distribution": reg.qqq_distribution, "facts": reg.facts},
             "funnel": funnel, "candidates": cands, "extended_skipped": extended[:8], "holdings": holdings, "candidate_errors": errors}

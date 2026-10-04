@@ -675,3 +675,48 @@ def test_build_context_filters_by_strength_sector_extension_and_earnings():
     assert ctx["holdings"] and ctx["holdings"][0]["symbol"] == "HELD"
     assert ctx["funnel"]["scan_matches"] == 4 and "run_scan" in rh.calls
     assert not any(t.startswith(("place_", "cancel_")) for t in rh.calls)
+
+
+def test_exit_flags_follow_the_skill():
+    from trader.strategy.momentum import exit_flags, stop_pct_for
+    assert stop_pct_for(1.0, 16.0) == 6.25
+    f = exit_flags(price=190, avg_cost=203.86, sma50=193.4, macd="POSITIVE_RISING", ext_label="CLEAN", stop_pct=6.25, earnings_days=None)
+    assert [x.split(":")[0] for x in f["must_sell"]] == ["HARD_STOP", "BELOW_50D_MA"]
+    ok = exit_flags(207, 203.86, 193.4, "POSITIVE_RISING", "ACCEPTABLE", 6.25, None)
+    assert ok["must_sell"] == [] and ok["pnl_pct"] == 1.54
+    assert exit_flags(210, 203.86, 190, "NEGATIVE_FALLING", "CLEAN", 6.25, None)["tighten"]
+    assert exit_flags(236, 200, 190, "POSITIVE_RISING", "TAKE_PROFITS", 6.25, None)["partial"][0].startswith("TARGET_15")
+    assert exit_flags(260, 200, 190, "POSITIVE_RISING", "CLEAN", 6.25, 1)["must_sell"][0].startswith("EARNINGS_IMMINENT")
+
+
+def test_pipeline_forces_a_mandatory_exit_the_analyst_missed(tmp_path):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from trader.analyst import DecisionSet
+    from trader.pipeline import run_pipeline
+    cfg = Config(db_path=str(tmp_path / "p.db"), allowed_account_id="ACC1", overrides=OV | {"momentum-quality": OV["momentum-quality"] | {"confirm_days": 0}})
+    j = Journal(cfg.db_path)
+    now = datetime(2026, 10, 6, 14, 0, tzinfo=timezone.utc)
+    controls.start(j, LB, 30, now.date())
+    ctx = _ctx()
+    ctx["candidates"], ctx["account"]["stop_pct"] = [], 6.25
+    ctx["account"]["positions"] = [{"symbol": "HELD", "qty": 2.0, "avg": 100.0}]
+    ctx["holdings"] = [{"symbol": "HELD", "qty": 2.0, "avg_cost": 100.0, "price": 92.0, "bid": 91.9, "sma50": 95.0, "macd": "NEGATIVE_FALLING",
+                        "extension_label": "BELOW_21EMA", "pnl_pct": -8.0, "sector": "Tech",
+                        "exit_flags": {"must_sell": ["HARD_STOP: x", "BELOW_50D_MA: y"], "tighten": [], "partial": [], "pnl_pct": -8.0}}]
+    lines = []
+
+    @asynccontextmanager
+    async def fake_connect(*a, **k):
+        yield object()
+
+    async def fake_build(rh, cfg, book, log, now):
+        return ctx
+
+    out = asyncio.run(run_pipeline(cfg, j, True, connect=fake_connect, build=fake_build, log=lines.append, now=now,
+                                   analyst_fn=lambda c, x: (DecisionSet(summary="hold", decisions=[]),   # analyst misses it
+                                                            {"input_tokens": 1, "output_tokens": 1, "cost_usd": 0.0})))
+    text = "\n".join(lines)
+    assert out == 0 and "FORCED EXIT by code (dry run): SELL 2 HELD limit 91.85" in text and "1 order(s) would be placed" in text
+    row = j.db.execute("SELECT approved, side, qty FROM decisions WHERE book=?", (LB,)).fetchone()
+    assert (row["approved"], row["side"], row["qty"]) == (1, "sell", 2)

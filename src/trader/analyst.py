@@ -79,10 +79,11 @@ Rules (hard):
 - A buy needs ALL six phases to pass: market, fundamentals (EPS growth >=20% YoY or revenue >=40%, market cap >$2B, clear
   catalyst, sector leader), trend_template (provided as facts), extension (never LATE or TAKE_PROFITS), stage2 (200d MA
   rising, base breakout on volume, outperforming SPY), momentum (MACD never NEGATIVE_FALLING; breakout on volume 40%+ above average).
-- Limit orders only: buy limit = ask + 0.10. Stop = ask * (1 - stop_pct) where stop_pct is about 6% (risk 1% of equity per trade);
-  target = ask * (1 + 3 * stop_pct). Quantity = floor(position_size / ask) (halve it within 10 days of earnings).
+- Limit orders only: buy limit = ask + 0.10. Stop = ask * (1 - account.stop_pct/100) using the stop_pct given in the data (risk 1% of equity per trade);
+  target = ask * (1 + 3 * account.stop_pct/100). Quantity = floor(position_size / ask) (halve it within 10 days of earnings).
 - One position per sector; at most 2 AI-related names; at most 5 positions; never add to a holding; never average down.
-- Exits for holdings: hard stop at -stop_pct from average cost; close below the 50-day MA; MACD NEGATIVE_FALLING means tighten
+- Holdings carry `exit_flags` computed by code. Every `must_sell` item is a mandatory exit: propose the sell. `tighten` and
+  `partial` items are judgment calls. Exit rules in full: hard stop at -stop_pct from average cost; close below the 50-day MA; MACD NEGATIVE_FALLING means tighten
   stop to breakeven; take half at +15%, rest at +25%; earnings within 10 days means sell or halve.
 - Quote real numbers from the data in every `evidence` string. For sells put the rule in `exit_rule`; for buys use "".
   For sells set stop_price and target_price to 0. Use earnings_days 999 when none is known.
@@ -172,6 +173,9 @@ def verify_against_facts(d: DecisionOut, ctx: dict) -> tuple[bool, list[str], di
     for k, v in phases.items():
         if not v["pass"]:
             problems.append(f"phase {k} failed: {v['evidence'][:140]}")
+    sp = ctx["account"].get("stop_pct")
+    if sp and d.stop_price and abs(d.stop_price - c["ask"] * (1 - sp / 100)) > c["ask"] * 0.0075:
+        problems.append(f"stop {d.stop_price} is not about ask {c['ask']} - {sp}% = {c['ask'] * (1 - sp / 100):.2f}")
     if d.qty > c["shares_at_position_size"]:
         problems.append(f"qty {d.qty} exceeds position-size shares {c['shares_at_position_size']}")
     if abs(d.limit_price - c["ask"] - 0.10) > max(0.15, c["ask"] * 0.003):
