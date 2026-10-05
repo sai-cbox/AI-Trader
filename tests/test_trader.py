@@ -944,3 +944,24 @@ def test_email_password_file_private(tmp_path):
     f = tmp_path / "pw"
     mailer.save_password("abcd efgh ijkl mnop", f)
     assert f.read_text() == "abcdefghijklmnop" and stat.S_IMODE(os.stat(f).st_mode) == 0o600
+
+
+def test_tick_runs_each_slot_once_and_entries_only_at_entry(tmp_path):
+    from datetime import timezone as tz
+    from trader import tick
+    cfg = Config(db_path=str(tmp_path / "k.db"))
+    j = Journal(cfg.db_path)
+    mon = lambda h, m: datetime(2026, 10, 5, h + 4, m, tzinfo=tz.utc)  # EDT = UTC-4
+    calls = []
+    kw = dict(log=lambda *_: None, run_live=lambda e: calls.append(("live", e)) or 0,
+              run_paper=lambda: calls.append(("paper",)) or 0, send_summary=lambda: calls.append(("mail",)))
+    assert tick.run_tick(cfg, j, mon(9, 30), **kw) is None
+    assert tick.run_tick(cfg, j, mon(9, 50), **kw) == "morning"
+    assert tick.run_tick(cfg, j, mon(9, 55), **kw) is None          # already ran today
+    assert tick.run_tick(cfg, j, mon(12, 31), **kw) == "midday"
+    assert tick.run_tick(cfg, j, mon(15, 46), **kw) == "entry"
+    assert tick.run_tick(cfg, j, mon(16, 21), **kw) == "close"
+    assert calls == [("live", False), ("live", False), ("live", True), ("paper",), ("mail",)]
+    sat = datetime(2026, 10, 10, 19, 50, tzinfo=tz.utc)
+    assert tick.run_tick(cfg, j, sat, **kw) is None
+    assert j.get("tick:entry") == "2026-10-05"

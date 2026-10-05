@@ -61,7 +61,7 @@ def print_context(ctx: dict, log=print) -> None:
 
 async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 8765, token_file=None, *,
                        connect=connect_read_only, analyst_fn=call_analyst, build=build_context, log=print,
-                       now: datetime | None = None) -> int:
+                       now: datetime | None = None, entries: bool = True) -> int:
     now = now or datetime.now(timezone.utc)
     book = cfg.live_book
     if not book:
@@ -125,6 +125,9 @@ async def run_pipeline(cfg: Config, j: Journal, with_analyst: bool, port: int = 
         log(f"  (hint: run `trader start --book {book}` once so the guard accepts dry-run decisions)")
     would = 0
     for d in ds.decisions[:cfg.analyst_max_proposals]:
+        if d.action == "buy" and not entries:
+            log(f"\n  SKIPPED BUY {d.symbol}: new positions are only opened in the 3:45 PM entry run")
+            continue
         ok, problems, phases = verify_against_facts(d, ctx)
         sig = {"phases": phases, "sector": d.sector, "is_ai": bool(d.is_ai or d.symbol in cfg.ai_symbols), "earnings_days": d.earnings_days, "setup": d.setup,
                "exit_rule": d.exit_rule, "analyst": usage}

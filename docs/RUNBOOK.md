@@ -62,3 +62,20 @@ See `docs/SPEC.md` for the full design and guardrails.
 2. `trader set-email-password` (hidden input; saved to `~/.config/ai-trader/smtp_password`, mode 600).
 3. `trader daily-summary --print` shows the text; `trader daily-summary` sends it to `email_to` in `config/default.toml`.
 Sent straight from your machine to smtp.gmail.com over SSL. Run it after `paper-run` / `data-check` so the numbers are fresh.
+
+## Schedule (4 runs a day, US/Eastern; still dry-run, no orders)
+`trader tick` runs whichever slot is due and never twice a day: morning 09:45 (exits only), midday 12:30 (exits only),
+entry 15:45 (the only run that may open positions), close 16:20 (paper strategies + summary email).
+- Mac (only works while awake): `sh deploy/install_mac_schedule.sh`; log in `data/tick.log`.
+- Cloud VM: see below.
+
+## Move to a cloud VM
+1. Create the smallest Ubuntu VM you can (1 vCPU, 1 GB is enough) at any provider. No inbound ports needed except SSH.
+2. SSH in, then: `curl -fsSL https://raw.githubusercontent.com/sai-cbox/AI-Trader/claude/jolly-goodall-8vwsoh/deploy/vm_setup.sh | sh`
+   (or clone the repo and run `sh deploy/vm_setup.sh`).
+3. From the Mac copy the secrets (never commit them): the Anthropic key `~/.config/ai-trader/anthropic_key`, the Robinhood
+   token file (path shown by `trader auth-check`), and optionally `smtp_password`, into `~/.config/ai-trader/` on the VM, mode 600.
+   Robinhood sign-in is a browser step, so it is done once on the Mac and the token is copied; if it expires you repeat that.
+4. Dashboard stays private: on your Mac run `ssh -L 8765:127.0.0.1:8765 user@VM`, then open http://127.0.0.1:8765
+   (start it on the VM with `trader dashboard`, or as a service).
+5. Turn the Mac schedule off (`launchctl unload ~/Library/LaunchAgents/com.ai-trader.tick.plist`) so two machines never run.

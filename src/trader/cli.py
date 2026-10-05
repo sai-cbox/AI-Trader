@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("set-email-password", help="store your Gmail App Password privately (hidden input; file readable only by you)")
     s = sub.add_parser("daily-summary", help="email today's summary to email_to (use --print to just show it, --test for a test mail)")
     s.add_argument("--print", dest="print_only", action="store_true", help="print the summary, send nothing")
+    s = sub.add_parser("tick", help="scheduler entry point: runs whichever of morning/midday/entry/close is due (see tick.py); safe to call every 5 min")
     s = sub.add_parser("alerts-test", help="send a test phone alert via ntfy (needs ntfy_topic in config)")
     s = sub.add_parser("dashboard", help="serve the monitoring dashboard or export a static snapshot")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--export", metavar="FILE.html")
@@ -212,6 +213,9 @@ def main(argv: list[str] | None = None) -> int:
         except MailError as e:
             print(f"[FAIL] {e}"); return 1
         print(f"sent to {cfg.email_to}")
+    elif a.cmd == "tick":
+        from .tick import run_tick
+        run_tick(cfg, j, now)
     elif a.cmd == "alerts-test":
         from .alerts import notify
         ok = notify(cfg, "AI-Trader test", "If you can read this on your phone, alerts work.")
